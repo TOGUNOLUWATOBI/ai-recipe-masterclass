@@ -1,0 +1,21 @@
+[
+  {"query": "jollof rice", "category": "dish_name", "expect_match": true, "expect_keyword": "jollof"},
+  {"query": "egusi soup", "category": "dish_name", "expect_match": true, "expect_keyword": "egusi"},
+  {"query": "biryani", "category": "dish_name", "expect_match": true, "expect_keyword": "bir"},
+  {"query": "briyani", "category": "dish_name_typo", "expect_match": true, "expect_keyword": "bir"},
+  {"query": "moi moi", "category": "dish_name", "expect_match": true, "expect_keyword": "moi moi"},
+  {"query": "thai green curry", "category": "dish_name", "expect_match": true, "expect_keyword": "curry"},
+  {"query": "chiken curry", "category": "dish_name_typo", "expect_match": true, "expect_keyword": "chicken"},
+  {"query": "waakye", "category": "dish_name", "expect_match": true, "expect_keyword": "waakye"},
+  {"query": "norwegian ribbe", "category": "dish_name", "expect_match": true, "expect_keyword": "ribbe"},
+  {"query": "swedish princess cake", "category": "dish_name", "expect_match": true, "expect_keyword": "princess cake"},
+  {"query": "nigerian stew", "category": "dish_name", "expect_match": true, "expect_keyword": "obe ata"},
+  {"query": "finnish karjalanpiirakka", "category": "dish_name_uncovered", "expect_match": false},
+  {"query": "icelandic hakarl", "category": "dish_name_uncovered", "expect_match": false},
+
+  {"query": "what can I make with chicken and rice", "category": "ingredient_based", "expect_match": true},
+  {"query": "I have eggs, flour, and sugar, what can I bake", "category": "ingredient_based", "expect_match": true},
+  {"query": "what soup can I make with beans", "category": "ingredient_based", "expect_match": true},
+  {"query": "budget friendly meal with ground beef and potatoes", "category": "ingredient_based", "expect_match": true},
+  {"query": "quick recipe using tomatoes onions and garlic", "category": "ingredient_based", "expect_match": true}
+]

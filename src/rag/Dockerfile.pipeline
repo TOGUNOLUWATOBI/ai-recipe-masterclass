@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY rag/requirements-pipeline.txt .
+RUN pip install --no-cache-dir -r requirements-pipeline.txt
+
+# Only the files pipeline_server.py actually imports — no torch/sentence-transformers/
+# qdrant-client here, retrieval lives entirely in the other container.
+COPY rag/__init__.py ./rag/__init__.py
+COPY rag/config.py ./rag/config.py
+COPY rag/generator.py ./rag/generator.py
+COPY rag/pipeline.py ./rag/pipeline.py
+COPY rag/retrieval_client.py ./rag/retrieval_client.py
+COPY rag/pipeline_server.py ./rag/pipeline_server.py
+
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8000
+
+CMD ["uvicorn", "rag.pipeline_server:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,254 @@
+[
+  {
+    "title": "Abacha and Ugba (Regular)",
+    "cuisine_profile": "Nigerian",
+    "nutrition": {
+      "calories_per_serving": 350,
+      "servings": 4
+    },
+    "ingredients_used": {
+      "anchor_ingredients": [
+        {
+          "item": "Shredded Cassava (Abacha)",
+          "quantity": "2 cups"
+        },
+        {
+          "item": "Dried Oil Beans",
+          "quantity": "1 cup soaked and cooked until tender"
+        }
+      ],
+      "pantry_staples": [
+        {
+          "item": "Palm Oil",
+          "quantity": "4 tablespoons"
+        },
+        {
+          "item": "Scotch Bonnet Pepper",
+          "quantity": "2-3 seeds minced"
+        },
+        {
+          "item": "Onions (diced)",
+          "quantity": "1 medium"
+        },
+        {
+          "item": "Garlic",
+          "quantity": "3 cloves"
+        },
+        {
+          "item": "Salt and Stock Cube",
+          "quantity": "to taste"
+        }
+      ]
+    },
+    "instructions": [
+      "Wash the dried oil beans thoroughly, soak them overnight if using old stock, then cook with onions and garlic until soft.",
+      "In a separate large pot, heat palm oil over medium-low heat to prevent burning.",
+      "Add diced onions and minced Scotch Bonnet peppers to the hot oil; fry gently for about 10 minutes until translucent but not charred.",
+      "Gently fold in the prepared abacha ensuring every shred is evenly coated with the spicy oil, season generously with salt."
+    ]
+  },
+  {
+    "title": "Abacha and Ugba",
+    "cuisine_profile": "Nigerian",
+    "nutrition": {
+      "calories_per_serving": 285,
+      "servings": 4
+    },
+    "ingredients_used": {
+      "anchor_ingredients": [
+        {
+          "item": "Boiled Cassava (pre-prepared)",
+          "quantity": "6 cups"
+        },
+        {
+          "item": "Ugba seeds",
+          "quantity": "1/2 cup"
+        },
+        {
+          "item": "Tinned Mackerel or Catfish",
+          "quantity": "3 cans"
+        }
+      ],
+      "pantry_staples": [
+        {
+          "item": "Palm Oil",
+          "quantity": "4 tablespoons"
+        },
+        {
+          "item": "Onion Flakes",
+          "quantity": "2 tablespoons"
+        },
+        {
+          "item": "Cucumber slices",
+          "quantity": "1 cup"
+        },
+        {
+          "item": "Tomato paste",
+          "quantity": "3 tablespoons"
+        }
+      ]
+    },
+    "instructions": [
+      "Prepare Ugba by washing seeds, then pounding with a mortar and pestle until the texture becomes soft but not mushy.",
+      "Fry onions in palm oil until translucent, add tomato paste to sauté briefly.",
+      "Mix chopped cucumbers into the prepared cassava salad (Abacha).",
+      "Spoon sauce onto Abacha, layer Ugba on top, season with fish and serve immediately."
+    ]
+  },
+  {
+    "title": "Abacha",
+    "cuisine_profile": "Nigerian",
+    "nutrition": {
+      "calories_per_serving": 0,
+      "servings": 4
+    },
+    "ingredients_used": {
+      "anchor_ingredients": [
+        {
+          "item": "Peeled and grated cassava (mixed green/yellow)",
+          "quantity": "2 cups"
+        },
+        {
+          "item": "Dried fish or smoked mackerel",
+          "quantity": "1 cup, flaked"
+        },
+        {
+          "item": "Tomato paste",
+          "quantity": "3 tablespoons"
+        }
+      ],
+      "pantry_staples": [
+        {
+          "item": "Garlic and ginger blend (or fresh grated)",
+          "quantity": "2 cloves worth"
+        },
+        {
+          "item": "Palm oil or vegetable oil",
+          "quantity": "4 tablespoons"
+        },
+        {
+          "item": "Cayenne pepper and dried thyme",
+          "quantity": "1 teaspoon"
+        }
+      ]
+    },
+    "instructions": [
+      "Wash the peeled, grated cassava thoroughly to remove any surface dust; drain well.",
+      "Boil a small amount of water in a pot with tomato paste until it reduces into a thick sauce, then add salt and set aside as dressing.",
+      "Season the fish flakes generously with spices like cayenne pepper, thyme, onions (if available), and boiled plantain or yam if using for heartiness; let sit to marinate.",
+      "In a large bowl, toss the drained cassava with palm oil and spice mix until evenly coated before adding seasoned fish gently."
+    ]
+  },
+  {
+    "title": "Afang Soup (Spicy)",
+    "cuisine_profile": "Nigerian",
+    "nutrition": {
+      "calories_per_serving": 0,
+      "servings": 4
+    },
+    "ingredients_used": {
+      "anchor_ingredients": [
+        {
+          "item": "Water Yam",
+          "quantity": "5 kg"
+        },
+        {
+          "item": "Afang Leaves",
+          "quantity": "2 bunches"
+        },
+        {
+          "item": "Smoked Fish",
+          "quantity": "300g"
+        },
+        {
+          "item": "Crab Meat",
+          "quantity": "4 pieces"
+        }
+      ],
+      "pantry_staples": [
+        {
+          "item": "Red Oil",
+          "quantity": "1 cup"
+        },
+        {
+          "item": "Palm Vinegar",
+          "quantity": "2 tbsp"
+        },
+        {
+          "item": "Scotch Bonnet Peppers",
+          "quantity": "3 large"
+        },
+        {
+          "item": "Stock Cubes (D'Aspic)",
+          "quantity": "4 cubes"
+        }
+      ]
+    },
+    "instructions": [
+      "Boil 5kg of water yam until cooked, then blend into a smooth paste and transfer to the soup pot.",
+      "Wash Afang leaves thoroughly in several changes of cold water and boil them gently for 10 minutes before discarding or keeping depending on preference. For this recipe, keep with other vegetables if using spinach instead",
+      "Add washed crayfish (or smoked fish chopped), crab meat, scotch bonnet peppers split open but not finely chopped to maintain heat without breaking down instantly.",
+      "Pour in red oil slowly while stirring constantly over medium heat until the soup thickens and turns a rich dark brown color. Simmer for 30 minutes before serving hot with pounded yam or ewedu."
+    ]
+  },
+  {
+    "title": "Afang Soup",
+    "cuisine_profile": "Nigerian",
+    "nutrition": {
+      "calories_per_serving": 250,
+      "servings": 4
+    },
+    "ingredients_used": {
+      "anchor_ingredients": [
+        {
+          "item": "Afang leaves (or waterleaf substitute)",
+          "quantity": "6 cups"
+        },
+        {
+          "item": "Smoked fish",
+          "quantity": "3 pieces"
+        },
+        {
+          "item": "Dried crabs or prawns",
+          "quantity": "5-7 pieces"
+        },
+        {
+          "item": "Palm oil",
+          "quantity": "1/2 cup"
+        },
+        {
+          "item": "Fish stock cubes (Basi)",
+          "quantity": "4"
+        },
+        {
+          "item": "Salted goat meat or beef chunks",
+          "quantity": "2 lbs"
+        }
+      ],
+      "pantry_staples": [
+        {
+          "item": "Egusi seeds ground into paste",
+          "quantity": "1/3 cup"
+        },
+        {
+          "item": "Dried shrimp powder (Iganu)",
+          "quantity": "5 tbsp"
+        },
+        {
+          "item": "Scotch bonnet pepper",
+          "quantity": "2 whole"
+        },
+        {
+          "item": "Onion chunks",
+          "quantity": "2 large"
+        }
+      ]
+    },
+    "instructions": [
+      "Wash and clean the afang leaves thoroughly, discarding tough stems, then slice them into bite-sized pieces.",
+      "Grind dried crabs or prawns (and smoked fish if preferred) in a blender with water to make 'pepko' until it reaches a smooth paste consistency; add more stock cubes for flavor depth if needed.",
+      "In a large pot over high heat, fry onions and scotch bonnet pepper slices in palm oil until fragrant but not burnt;",
+      "Add the meat chunks (or smoked fish), ground dried shrimp powder, egusi seeds mixed with water to form soup consistency; season with salt stock cubes and bring mixture to boil."
+    ]
+  }
+]

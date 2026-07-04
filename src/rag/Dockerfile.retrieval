@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY rag/requirements-retrieval.txt .
+RUN pip install --no-cache-dir -r requirements-retrieval.txt
+
+COPY rag/ ./rag/
+COPY notebooks/synthetic_african_recipes.json ./notebooks/synthetic_african_recipes.json
+COPY notebooks/synthetic_scandi_recipes.json ./notebooks/synthetic_scandi_recipes.json
+COPY notebooks/web_recipe_corpus.json ./notebooks/web_recipe_corpus.json
+
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8000
+
+CMD ["uvicorn", "rag.retrieval_server:app", "--host", "0.0.0.0", "--port", "8000"]

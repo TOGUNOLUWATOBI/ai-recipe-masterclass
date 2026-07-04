@@ -1,0 +1,49 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+  rag-service:
+    build:
+      context: .
+      dockerfile: rag/Dockerfile.retrieval
+    container_name: rag-service
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    volumes:
+      # Persists the content-hash manifest across restarts so build_index() can skip
+      # re-embedding ~20k recipes every time the container restarts — without this the
+      # manifest lives in the container's ephemeral filesystem and gets wiped each time.
+      - ./rag_manifest:/app/rag/local_qdrant
+      # Persists downloaded model weights (bge-base + cross-encoder) across restarts —
+      # without this every fresh container re-downloads ~500MB from HuggingFace.
+      - ./hf_cache:/root/.cache/huggingface
+    # No published host port — only reachable by pipeline-service over the internal
+    # Docker network. Never exposed through the Cloudflare Tunnel.
+
+  pipeline-service:
+    build:
+      context: .
+      dockerfile: rag/Dockerfile.pipeline
+    container_name: pipeline-service
+    restart: unless-stopped
+    depends_on:
+      - rag-service
+    environment:
+      - RAG_SERVICE_URL=http://rag-service:8000
+      - LLM_API_STYLE=ollama
+      - LLM_MODEL=toriko3:latest
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8010:8000"  # cloudflared's ingress rule for recipe.bebs.dev points here
