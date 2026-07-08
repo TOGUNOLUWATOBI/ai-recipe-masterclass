@@ -43,6 +43,11 @@ services:
       - LLM_API_STYLE=ollama
       - LLM_MODEL=toriko3:latest
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # v2 discount flow — set via a .env file next to this compose file (e.g.
+      # ~/recipe-rag/.env with KASSALAPP_API_KEY=...), picked up automatically by
+      # docker compose. Defaults to empty, which /recipes/discounted treats as "not
+      # configured" rather than failing.
+      - KASSALAPP_API_KEY=${KASSALAPP_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

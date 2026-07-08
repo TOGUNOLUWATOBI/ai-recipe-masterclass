@@ -112,6 +112,11 @@ re-embeds the full ~20k-recipe corpus from scratch).
 - `POST /recipes/from-ingredients` — given a list of ingredients, returns up to
   `max_results` matching corpus recipes, or several LLM-generated suggestions if nothing
   in the corpus matches
+- `GET /recipes/discounted` — v2: pulls current Kassalapp grocery discounts on tracked
+  ingredients, feeds the real discovered product names into the same corpus-first/
+  LLM-fallback logic as `/recipes/from-ingredients` (see `rag/grocery_discounts.py` for
+  why product names, not the originally-intended ingredient label, are what get passed
+  through). Returns `{"error": "KASSALAPP_API_KEY not configured"}` until a key is set
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from
@@ -122,6 +127,15 @@ re-embeds the full ~20k-recipe corpus from scratch).
 - ✅ Fine-tuned model + RAG pipeline live at `recipe.bebs.dev`
 - ✅ 20,217-recipe corpus (food.com + Kaggle + Indian dataset + curated African +
   Scandinavian recipes), full retrieval regression suite passing
-- ⏳ v2: discount-driven recipe generation (pull grocery deals, generate recipes from
-  what's on sale) and reverse ingredient-sourcing (given a recipe, find where to buy
-  ingredients cheapest) — not yet built
+- ✅ v2 discount-driven recipe generation — live at `recipe.bebs.dev/recipes/discounted`.
+  Product lookup is category-scoped against Kassalapp's ~2,000-category taxonomy
+  (free-text search alone surfaced baby food for common terms like "kylling"/chicken —
+  see `grocery_discounts.py` for the full story). Rather than perfectly disambiguating
+  every tracked ingredient to its exact intended product, the pipeline passes whatever
+  real product a category search finds straight to the LLM and trusts it to interpret
+  correctly — confirmed live that this works well (a mismatched "ham" result under an
+  "eggs" search still produced a correct ham suggestion, never a hallucinated egg dish).
+  Run `python -m rag.grocery_discounts` to sanity-check current lookups against the
+  live API.
+- ⏳ v2 reverse ingredient-sourcing (given a recipe, find where to buy ingredients
+  cheapest) — not yet built
