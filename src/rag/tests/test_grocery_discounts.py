@@ -1,10 +1,5 @@
 """Tests for grocery_discounts.py's pure logic and client wiring, using mocked HTTP
-responses — no real Kassalapp API key needed. The response shapes and category names
-mocked here match what a live call actually returned (verified 2026-07-06), not just
-Kassalapp's documentation — see the module docstring for what was only caught this way:
-nested price_history instead of a flat price field, free-text search being unreliable
-for this domain (baby food/deli noise), and the category taxonomy that fixes it for
-most tracked ingredients."""
+responses -- no real Kassalapp API key needed."""
 
 from unittest.mock import MagicMock, patch
 
@@ -12,38 +7,27 @@ import pytest
 import requests
 
 from rag.grocery_discounts import (
+    GROCERY_STORE_GROUPS,
     KassalappClient,
     _extract_reference_price,
+    _filter_usable_candidates,
     _is_baby_food,
-    _name_matches_term,
+    _is_non_food,
+    _maybe_wait_for_rate_limit,
     _percent_below,
-    _select_representative_product,
-    find_discounted_ingredients,
-    get_norwegian_term,
+    _top_level_category,
+    find_discounted_products,
 )
 
 
 @pytest.fixture(autouse=True)
 def no_real_sleep():
-    """find_discounted_ingredients() paces real Kassalapp calls with time.sleep(0.3) to
-    avoid rate limiting — harmless in production, but would needlessly slow down every
-    test in this file (mocked calls don't need pacing) without this patched out."""
     with patch("rag.grocery_discounts.time.sleep"):
         yield
 
 
-_STUB_TRANSLATIONS = {"chicken": "kylling", "salmon": "laks", "garlic": "hvitløk"}
-
-
-@pytest.fixture(autouse=True)
-def stub_translation():
-    """find_discounted_ingredients() now calls get_norwegian_term() for every
-    ingredient (even category-based ones, to disambiguate within the category — see the
-    module docstring), so it must not hit the real translation API from these tests.
-    Doesn't affect the two tests that exercise get_norwegian_term() directly — they
-    import the real function by name, unaffected by patching the module's attribute."""
-    with patch("rag.grocery_discounts.get_norwegian_term", side_effect=lambda en: _STUB_TRANSLATIONS[en]):
-        yield
+def test_grocery_store_groups_has_no_duplicates():
+    assert len(GROCERY_STORE_GROUPS) == len(set(GROCERY_STORE_GROUPS))
 
 
 def test_percent_below_computes_discount_correctly():
@@ -59,8 +43,6 @@ def test_percent_below_handles_zero_reference_without_dividing_by_zero():
 
 
 def test_extract_reference_price_averages_price_history():
-    """Real shape confirmed via a live call: data[].price_history[] is a full list of
-    daily {price, date, store} entries, not a single pre-aggregated value."""
     response = {
         "data": [
             {"ean": "123", "price_history": [{"price": 40.0}, {"price": 50.0}]},
@@ -81,8 +63,6 @@ def test_extract_reference_price_returns_none_for_empty_history():
 
 
 def test_extract_reference_price_degrades_gracefully_on_unexpected_shape():
-    """Regression guard: an unexpected response shape (e.g. Kassalapp changing their
-    API) should degrade to "no data" rather than crash the whole discount scan."""
     assert _extract_reference_price({"totally": "different shape"}, "123") is None
     assert _extract_reference_price({"data": "not a list"}, "123") is None
 
@@ -93,9 +73,6 @@ def test_is_baby_food_detects_tagged_category():
 
 
 def test_is_baby_food_detects_untagged_age_naming_convention():
-    """Regression test for a real finding: one live baby-food result had an EMPTY
-    category list despite obviously being baby food by its "6mnd" (6 months) naming —
-    category alone would have missed it."""
     product = {"name": "Kyllinggryte Økologisk 6mnd 190g Hipp", "category": []}
     assert _is_baby_food(product) is True
 
@@ -106,97 +83,101 @@ def test_is_baby_food_false_for_ordinary_product():
 
 
 def test_is_baby_food_detects_brand_field_mention():
-    """Regression test for a real finding: one live baby-food product (brand
-    "Alex&Phil") had neither a matching category nor the "Nmnd" naming pattern, but the
-    brand field itself said "Alex&phil barnemat" — checking category and name alone
-    would have missed this one too."""
     product = {"name": "Kylling&Eple Måltid Økologisk 180g Alex&Phil", "category": [], "brand": "Alex&phil barnemat"}
     assert _is_baby_food(product) is True
 
 
-def test_name_matches_term_matches_compound_word_prefix():
-    """"kyllingfilet" is one word (no space) that starts with "kylling" — must still
-    match, this is the common case for raw-meat product naming."""
-    assert _name_matches_term("Kyllingfilet 500g", "kylling") is True
+def test_top_level_category_extracts_depth_minus_2():
+    product = {"category": [
+        {"id": 1, "depth": -2, "name": "Frukt & grønt"},
+        {"id": 2, "depth": -1, "name": "Frukt"},
+        {"id": 3, "depth": 0, "name": "Sitrusfrukt"},
+    ]}
+    assert _top_level_category(product) == "Frukt & grønt"
 
 
-def test_name_matches_term_matches_brand_first_naming():
-    """Regression test for a real finding: "eggs" translates correctly to "egg", but
-    the actual product is named "Prior Egg 12stk" (brand first) — a plain
-    whole-string .startswith() check would miss this since the string starts with the
-    brand, not the ingredient. Checking each word's prefix instead of the whole
-    string's catches it via the second word."""
-    assert _name_matches_term("Prior Egg 12stk", "egg") is True
+def test_top_level_category_falls_back_to_shallowest_available_depth():
+    """Regression test for a real finding: category hierarchy depth isn't consistent
+    across product types -- most have 3 levels (-2/-1/0), but e.g. Coca-Cola's real
+    category array is only [{"depth": -1, "name": "Drikke"}, {"depth": 0, "name":
+    "Brus"}], no -2 entry at all. A hardcoded depth=-2 check would silently miss this
+    and dump an otherwise well-categorized product into the "Annet" fallback -- must
+    use whichever entry has the minimum depth instead."""
+    assert _top_level_category({"category": [{"depth": -1, "name": "Drikke"}, {"depth": 0, "name": "Brus"}]}) == "Drikke"
 
 
-def test_name_matches_term_rejects_cross_word_substring_match():
-    """Regression guard for the original bug this whole heuristic exists to prevent:
-    "løk" (onion) must not match "Hvitløk" (garlic, a different vegetable) just
-    because "løk" is a substring of it — "hvitløk" doesn't START with "løk", so no
-    word matches."""
-    assert _name_matches_term("Hvitløkspate 180g Finsbråten", "løk") is False
+def test_top_level_category_returns_none_when_category_list_is_empty():
+    assert _top_level_category({"category": []}) is None
+    assert _top_level_category({}) is None
 
 
-def test_select_representative_product_prefers_name_starting_with_search_term():
-    """Regression test for a real finding: Kassalapp's top search hit for "kylling"
-    (chicken) was baby food containing chicken as one ingredient among several, not
-    chicken itself. A product whose name actually starts with the search term is a much
-    better proxy for "this is the ingredient," not just "mentions it.\""""
-    products = [
-        {"name": "Couscous Kylling 8mnd 190g Nestle", "ean": "1", "current_price": 20.0},
-        {"name": "Kyllingfilet 500g", "ean": "2", "current_price": 80.0},
-    ]
-    assert _select_representative_product(products, "kylling")["name"] == "Kyllingfilet 500g"
+def test_is_non_food_excludes_personal_care():
+    product = {"category": [{"depth": -2, "name": "Personlige artikler"}]}
+    assert _is_non_food(product) is True
 
 
-def test_select_representative_product_matches_brand_first_naming():
-    """Regression test for the real "eggs" finding: within the "Egg" category, the
-    representative product was named "Prior Egg 12stk" — brand first — and the old
-    whole-string-prefix heuristic fell through to an unrelated first result instead."""
-    products = [
-        {"name": "Skinke Kokt 150g Folkets", "ean": "1", "current_price": 40.0},
-        {"name": "Prior Egg 12stk", "ean": "2", "current_price": 45.0},
-    ]
-    assert _select_representative_product(products, "egg")["name"] == "Prior Egg 12stk"
+def test_is_non_food_excludes_household_goods():
+    product = {"category": [{"depth": -2, "name": "Hus & hjem"}]}
+    assert _is_non_food(product) is True
 
 
-def test_select_representative_product_excludes_baby_food_even_if_name_matches():
-    """Regression test for a real finding: "Kyllinggryte...6mnd...Hipp" (a baby food
-    chicken stew) also starts with "kylling" and would have wrongly passed the plain
-    startswith heuristic — baby-food exclusion must run first."""
+def test_is_non_food_excludes_baby_products_category():
+    product = {"category": [{"depth": -2, "name": "Barneprodukter"}]}
+    assert _is_non_food(product) is True
+
+
+def test_is_non_food_false_for_real_food_category():
+    product = {"category": [{"depth": -2, "name": "Kjøtt"}]}
+    assert _is_non_food(product) is False
+
+
+def test_filter_usable_candidates_excludes_baby_food():
     products = [
         {"name": "Kyllinggryte Økologisk 6mnd 190g Hipp", "category": [], "ean": "1", "current_price": 30.0},
-        {"name": "Kyllingfilet 500g", "category": [{"name": "Kjøtt"}], "ean": "2", "current_price": 80.0},
+        {"name": "Kyllingfilet 500g", "category": [{"depth": -2, "name": "Kjøtt"}], "ean": "2", "current_price": 80.0},
     ]
-    assert _select_representative_product(products, "kylling")["name"] == "Kyllingfilet 500g"
+    result = _filter_usable_candidates(products)
+    assert [p["ean"] for p in result] == ["2"]
 
 
-def test_select_representative_product_falls_back_to_baby_food_if_nothing_else_matches():
-    """If literally every result is baby food (confirmed live: all 10 results for
-    "kylling" on one free-text search were), still return something rather than
-    nothing — a slightly-off signal beats no signal at all for a discount scan."""
-    products = [{"name": "Couscous Kylling 8mnd 190g Nestle", "category": [], "ean": "1", "current_price": 20.0}]
-    assert _select_representative_product(products, "kylling") == products[0]
+def test_filter_usable_candidates_excludes_non_food_categories():
+    products = [
+        {"name": "Shampoo", "category": [{"depth": -2, "name": "Personlige artikler"}], "ean": "1", "current_price": 30.0},
+        {"name": "Kyllingfilet 500g", "category": [{"depth": -2, "name": "Kjøtt"}], "ean": "2", "current_price": 80.0},
+    ]
+    result = _filter_usable_candidates(products)
+    assert [p["ean"] for p in result] == ["2"]
 
 
-def test_select_representative_product_falls_back_to_first_result():
-    products = [{"name": "Couscous Kylling 8mnd 190g Nestle", "ean": "1", "current_price": 20.0}]
-    assert _select_representative_product(products, "kylling") == products[0]
+def test_filter_usable_candidates_excludes_products_missing_ean_or_price():
+    products = [
+        {"name": "No EAN", "current_price": 10.0},
+        {"name": "No price", "ean": "1"},
+        {"name": "Usable", "ean": "2", "current_price": 20.0},
+    ]
+    result = _filter_usable_candidates(products)
+    assert [p["ean"] for p in result] == ["2"]
 
 
-def test_select_representative_product_handles_empty_list():
-    assert _select_representative_product([], "kylling") is None
+def test_filter_usable_candidates_returns_every_usable_product_not_just_one():
+    products = [
+        {"name": "Kyllingfilet 500g", "ean": "1", "current_price": 80.0},
+        {"name": "Kyllinglår 1kg", "ean": "2", "current_price": 60.0},
+        {"name": "Kyllingvinger 400g", "ean": "3", "current_price": 40.0},
+    ]
+    result = _filter_usable_candidates(products)
+    assert len(result) == 3
 
 
-def test_select_representative_product_returns_none_when_nothing_has_a_usable_price():
-    products = [{"name": "Kyllingfilet 500g"}]  # no ean, no current_price
-    assert _select_representative_product(products, "kylling") is None
+def test_filter_usable_candidates_handles_empty_list():
+    assert _filter_usable_candidates([]) == []
 
 
 class _FakeResponse:
-    def __init__(self, json_data, status=200):
+    def __init__(self, json_data, status=200, headers=None):
         self._json = json_data
         self.status_code = status
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -204,6 +185,19 @@ class _FakeResponse:
 
     def json(self):
         return self._json
+
+
+def test_kassalapp_client_search_products_by_store():
+    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+
+    with patch("rag.grocery_discounts.requests.get") as mock_get:
+        mock_get.return_value = _FakeResponse({"data": [{"name": "Kyllingfilet", "ean": "1"}]})
+        result = client.search_products(store="KIWI", size=100, unique=1)
+
+    assert result == [{"name": "Kyllingfilet", "ean": "1"}]
+    call_kwargs = mock_get.call_args.kwargs
+    assert call_kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert call_kwargs["params"] == {"size": 100, "store": "KIWI", "unique": 1}
 
 
 def test_kassalapp_client_search_products_by_category():
@@ -215,7 +209,6 @@ def test_kassalapp_client_search_products_by_category():
 
     assert result == [{"name": "Kyllingfilet", "ean": "1"}]
     call_kwargs = mock_get.call_args.kwargs
-    assert call_kwargs["headers"]["Authorization"] == "Bearer test-key"
     assert call_kwargs["params"] == {"size": 20, "category": "Kylling"}
 
 
@@ -242,134 +235,297 @@ def test_kassalapp_client_get_price_history_bulk_posts_expected_payload():
     assert call_kwargs["json"] == {"eans": ["111", "222"], "days": 14, "aggregation": "min"}
 
 
-def _price_history_response(ean, price):
-    history = [{"price": price}] if price is not None else []
-    return {"data": [{"ean": ean, "price_history": history}]}
+def test_kassalapp_client_starts_with_unknown_rate_limit():
+    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+    assert client.rate_limit_remaining is None
 
 
-def test_find_discounted_ingredients_uses_category_lookup_when_available():
-    tracked = [{"en": "chicken", "category": "Kylling"}]
+def test_kassalapp_client_search_products_tracks_rate_limit_from_headers():
+    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+
+    with patch("rag.grocery_discounts.requests.get") as mock_get:
+        mock_get.return_value = _FakeResponse({"data": []}, headers={"X-RateLimit-Remaining": "42"})
+        client.search_products(store="KIWI")
+
+    assert client.rate_limit_remaining == 42
+
+
+def test_kassalapp_client_get_price_history_bulk_tracks_rate_limit_from_headers():
+    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+
+    with patch("rag.grocery_discounts.requests.post") as mock_post:
+        mock_post.return_value = _FakeResponse({"data": []}, headers={"X-RateLimit-Remaining": "17"})
+        client.get_price_history_bulk(["111"])
+
+    assert client.rate_limit_remaining == 17
+
+
+def test_kassalapp_client_tracks_rate_limit_even_on_error_response():
+    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+
+    with patch("rag.grocery_discounts.requests.get") as mock_get:
+        mock_get.return_value = _FakeResponse({}, status=429, headers={"X-RateLimit-Remaining": "0"})
+        with pytest.raises(requests.HTTPError):
+            client.search_products(store="KIWI")
+
+    assert client.rate_limit_remaining == 0
+
+
+def test_kassalapp_client_ignores_missing_rate_limit_header():
+    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+
+    with patch("rag.grocery_discounts.requests.get") as mock_get:
+        mock_get.return_value = _FakeResponse({"data": []})
+        client.search_products(store="KIWI")
+
+    assert client.rate_limit_remaining is None
+
+
+def test_maybe_wait_for_rate_limit_pauses_when_budget_is_low():
     client = MagicMock()
-    client.search_products.return_value = [{"ean": "1", "current_price": 80.0, "name": "Kyllingfilet"}]
-    client.get_price_history_bulk.return_value = _price_history_response("1", 100.0)
+    client.rate_limit_remaining = 2
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    with patch("rag.grocery_discounts.time.sleep") as mock_sleep:
+        _maybe_wait_for_rate_limit(client, threshold=3, cooldown=61.0)
+
+    mock_sleep.assert_called_once_with(61.0)
+    assert client.rate_limit_remaining is None
+
+
+def test_maybe_wait_for_rate_limit_does_nothing_when_budget_is_healthy():
+    client = MagicMock()
+    client.rate_limit_remaining = 50
+
+    with patch("rag.grocery_discounts.time.sleep") as mock_sleep:
+        _maybe_wait_for_rate_limit(client, threshold=3, cooldown=61.0)
+
+    mock_sleep.assert_not_called()
+    assert client.rate_limit_remaining == 50
+
+
+def test_maybe_wait_for_rate_limit_does_nothing_when_remaining_is_unknown():
+    client = MagicMock()
+
+    with patch("rag.grocery_discounts.time.sleep") as mock_sleep:
+        _maybe_wait_for_rate_limit(client, threshold=3, cooldown=61.0)
+
+    mock_sleep.assert_not_called()
+
+
+def _history_response(*ean_price_pairs):
+    return {"data": [{"ean": ean, "price_history": [{"price": price}]} for ean, price in ean_price_pairs]}
+
+
+def _product(ean, name, price, top_level_category="Kjøtt", store_name="Kiwi", store_logo="k.svg"):
+    return {
+        "name": name,
+        "ean": ean,
+        "current_price": price,
+        "category": [{"depth": -2, "name": top_level_category}],
+        "store": {"name": store_name, "logo": store_logo},
+    }
+
+
+def test_find_discounted_products_evaluates_every_candidate_in_a_store_not_just_one():
+    client = MagicMock()
+    client.search_products.return_value = [
+        _product("1", "Kyllingfilet 500g", 80.0),
+        _product("2", "Kyllinglår 1kg", 60.0),
+        _product("3", "Kyllingvinger 400g", 40.0),
+    ]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0), ("2", 100.0), ("3", 100.0))
+
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
+
+    assert {r["product_name"] for r in result} == {"Kyllingfilet 500g", "Kyllinglår 1kg", "Kyllingvinger 400g"}
+    assert all(r["store_name"] == "Kiwi" for r in result)
+
+
+def test_find_discounted_products_labels_results_with_the_products_own_top_level_category():
+    client = MagicMock()
+    client.search_products.return_value = [
+        _product("1", "Kyllingfilet", 80.0, top_level_category="Kjøtt"),
+        _product("2", "Agurk", 10.0, top_level_category="Frukt & grønt"),
+    ]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0), ("2", 100.0))
+
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
+
+    labels = {r["product_name"]: r["category"] for r in result}
+    assert labels == {"Kyllingfilet": "Kjøtt", "Agurk": "Frukt & grønt"}
+
+
+def test_find_discounted_products_excludes_non_food_and_baby_food_candidates():
+    """Non-food/baby-food exclusion still applies unconditionally -- these must never
+    appear at all, discount or not, unlike an ordinary product with no computable
+    discount (which is still shown, just without a badge)."""
+    client = MagicMock()
+    client.search_products.return_value = [
+        _product("1", "Kyllingfilet", 80.0, top_level_category="Kjøtt"),
+        _product("2", "Shampoo", 30.0, top_level_category="Personlige artikler"),
+        {"name": "Babymat 6mnd", "ean": "3", "current_price": 20.0, "category": [{"depth": -2, "name": "Kjøtt"}], "store": {}},
+    ]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0))
+
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
+
+    assert [r["product_name"] for r in result] == ["Kyllingfilet"]
+    client.get_price_history_bulk.assert_called_once()
+    assert set(client.get_price_history_bulk.call_args.args[0]) == {"1"}
+
+
+def test_find_discounted_products_includes_items_below_threshold_without_a_discount_badge():
+    """Core behavior change: an item whose price history exists but doesn't clear the
+    threshold is still returned (unlike the old design, which dropped it entirely) --
+    just with discount_pct/reference_price left None so the UI doesn't show a
+    misleading badge for a trivial or nonexistent discount."""
+    client = MagicMock()
+    client.search_products.return_value = [
+        _product("1", "Discounted Item", 80.0),
+        _product("2", "Not Discounted Item", 98.0),
+    ]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0), ("2", 100.0))
+
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
+
+    by_name = {r["product_name"]: r for r in result}
+    assert set(by_name) == {"Discounted Item", "Not Discounted Item"}
+    assert by_name["Discounted Item"]["discount_pct"] == 20.0
+    assert by_name["Discounted Item"]["reference_price"] == 100.0
+    assert by_name["Not Discounted Item"]["discount_pct"] is None
+    assert by_name["Not Discounted Item"]["reference_price"] is None
+
+
+def test_find_discounted_products_batches_price_history_into_one_call_per_store():
+    client = MagicMock()
+    client.search_products.return_value = [_product("1", "A", 10.0), _product("2", "B", 10.0)]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0), ("2", 100.0))
+
+    find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
+
+    client.get_price_history_bulk.assert_called_once()
+    assert set(client.get_price_history_bulk.call_args.args[0]) == {"1", "2"}
+
+
+def test_find_discounted_products_includes_products_with_no_price_history_at_all():
+    """Regression test for a real finding: roughly half of real sausage products
+    checked live had NO price history recorded by Kassalapp at all -- these must still
+    be shown (a real, currently-on-sale product could be among them; we simply can't
+    tell), not silently dropped just because we can't evaluate them."""
+    client = MagicMock()
+    client.search_products.return_value = [_product("1", "Untracked Product", 50.0)]
+    client.get_price_history_bulk.return_value = {"data": [{"ean": "1", "price_history": []}]}
+
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
 
     assert len(result) == 1
-    assert result[0]["ingredient_en"] == "chicken"
-    assert result[0]["discount_pct"] == 20.0
-    call_kwargs = client.search_products.call_args.kwargs
-    assert call_kwargs == {"category": "Kylling", "size": 20}
+    assert result[0]["product_name"] == "Untracked Product"
+    assert result[0]["discount_pct"] is None
+    assert result[0]["reference_price"] is None
 
 
-def test_find_discounted_ingredients_falls_back_to_search_when_no_category():
-    """Regression test: ingredients with no clean Kassalapp category (garlic, carrots,
-    spinach in the real tracked list) must still go through translated free-text
-    search, not silently get skipped."""
-    tracked = [{"en": "garlic", "category": None}]
+def test_find_discounted_products_includes_products_even_when_price_history_call_fails():
+    """A failed price-history-bulk call is no longer a reason to hide that store's
+    products entirely -- they're still returned, just without discount info, matching
+    how a missing/empty history is handled."""
     client = MagicMock()
-    client.search_products.return_value = [{"ean": "1", "current_price": 80.0, "name": "Hvitløk"}]
-    client.get_price_history_bulk.return_value = _price_history_response("1", 100.0)
+    client.search_products.side_effect = [
+        [_product("1", "Kyllingfilet", 80.0)],
+        [_product("2", "Laksefilet", 50.0)],
+    ]
+    client.get_price_history_bulk.side_effect = [
+        requests.RequestException("simulated failure"),
+        _history_response(("2", 60.0)),
+    ]
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, store_groups=["KIWI", "COOP_NO"], threshold_pct=15.0)
 
-    assert len(result) == 1
-    assert result[0]["ingredient_en"] == "garlic"
-    call_kwargs = client.search_products.call_args.kwargs
-    assert call_kwargs == {"search": "hvitløk", "size": 20}
-
-
-def test_find_discounted_ingredients_excludes_items_below_threshold():
-    tracked = [{"en": "chicken", "category": "Kylling"}]
-    client = MagicMock()
-    client.search_products.return_value = [{"ean": "1", "current_price": 95.0, "name": "Kyllingfilet"}]
-    client.get_price_history_bulk.return_value = _price_history_response("1", 100.0)  # only 5% below
-
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
-
-    assert result == []
+    by_name = {r["product_name"]: r for r in result}
+    assert set(by_name) == {"Kyllingfilet", "Laksefilet"}
+    assert by_name["Kyllingfilet"]["discount_pct"] is None
 
 
-def test_find_discounted_ingredients_skips_ingredients_with_no_search_results():
-    tracked = [{"en": "chicken", "category": "Kylling"}, {"en": "salmon", "category": "Laks"}]
+def test_find_discounted_products_skips_stores_with_no_search_results():
     client = MagicMock()
 
-    def by_category(category=None, search=None, size=20):
-        if category == "Laks":
-            return [{"ean": "2", "current_price": 50.0, "name": "Laksefilet"}]
+    def by_store(store=None, search=None, category=None, unique=None, size=100):
+        if store == "COOP_NO":
+            return [_product("2", "Laksefilet", 50.0)]
         return []
 
-    client.search_products.side_effect = by_category
-    client.get_price_history_bulk.return_value = _price_history_response("2", 100.0)
+    client.search_products.side_effect = by_store
+    client.get_price_history_bulk.return_value = _history_response(("2", 100.0))
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, store_groups=["KIWI", "COOP_NO"], threshold_pct=15.0)
 
     assert len(result) == 1
-    assert result[0]["ingredient_en"] == "salmon"
+    assert result[0]["product_name"] == "Laksefilet"
+    assert client.get_price_history_bulk.call_count == 1
 
 
-def test_find_discounted_ingredients_skips_products_missing_ean_or_price():
-    tracked = [{"en": "chicken", "category": "Kylling"}]
-    client = MagicMock()
-    client.search_products.return_value = [{"name": "Kyllingfilet"}]  # no ean, no current_price
-
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
-
-    assert result == []
-
-
-def test_find_discounted_ingredients_continues_after_a_search_failure():
-    """One ingredient's API call failing (network error, rate limit) shouldn't abort
-    the whole scan — the rest of the tracked list should still get checked."""
-    tracked = [{"en": "chicken", "category": "Kylling"}, {"en": "salmon", "category": "Laks"}]
+def test_find_discounted_products_continues_after_a_search_failure():
     client = MagicMock()
 
-    def flaky_search(category=None, search=None, size=20):
-        if category == "Kylling":
+    def flaky_search(store=None, search=None, category=None, unique=None, size=100):
+        if store == "KIWI":
             raise requests.RequestException("simulated network failure")
-        return [{"ean": "2", "current_price": 50.0, "name": "Laksefilet"}]
+        return [_product("2", "Laksefilet", 50.0)]
 
     client.search_products.side_effect = flaky_search
-    client.get_price_history_bulk.return_value = _price_history_response("2", 100.0)
+    client.get_price_history_bulk.return_value = _history_response(("2", 100.0))
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, store_groups=["KIWI", "COOP_NO"], threshold_pct=15.0)
 
     assert len(result) == 1
-    assert result[0]["ingredient_en"] == "salmon"
+    assert result[0]["product_name"] == "Laksefilet"
 
 
-def test_get_norwegian_term_caches_and_falls_back_to_english_on_failure():
-    import rag.grocery_discounts as gd
-    gd._translation_cache.clear()
+def test_find_discounted_products_skips_products_missing_ean_or_price():
+    client = MagicMock()
+    client.search_products.return_value = [{"name": "Kyllingfilet"}]
 
-    with patch("rag.grocery_discounts.requests.get") as mock_get:
-        mock_get.side_effect = requests.RequestException("simulated network failure")
-        result = get_norwegian_term("xyzzy-unlikely-term")
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
 
-    assert result == "xyzzy-unlikely-term"  # graceful fallback, not a raised exception
-    assert gd._translation_cache["xyzzy-unlikely-term"] == "xyzzy-unlikely-term"
+    assert result == []
+    client.get_price_history_bulk.assert_not_called()
 
 
-def test_get_norwegian_term_uses_override_before_calling_api():
-    import rag.grocery_discounts as gd
-    gd._translation_cache.clear()
+def test_find_discounted_products_does_not_dedupe_across_stores():
+    """Deliberate design change: the same EAN appearing at two different stores must be
+    priced and shown independently for each -- this is a per-store browse now, not a
+    single merged "is this on sale anywhere" list, so one store's listing is never
+    hidden just because the same product was already seen at another store."""
+    client = MagicMock()
+    client.search_products.return_value = [_product("1", "Shared Product", 50.0)]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0))
 
-    with patch("rag.grocery_discounts.requests.get") as mock_get:
-        result = get_norwegian_term("salmon")
+    result = find_discounted_products(client, store_groups=["KIWI", "COOP_NO"], threshold_pct=15.0)
 
-    assert result == "laks"
-    mock_get.assert_not_called()
+    assert len(result) == 2
+    assert client.get_price_history_bulk.call_count == 2
 
 
-def test_get_norwegian_term_butter_override():
-    """Regression test for a real finding: MyMemory translated "butter" to
-    "påleggssalat og smørepålegg" (a nonsense multi-word phrase), matching zero
-    Kassalapp products."""
-    import rag.grocery_discounts as gd
-    gd._translation_cache.clear()
+def test_find_discounted_products_sorts_confirmed_discounts_first_by_descending_pct():
+    client = MagicMock()
+    client.search_products.return_value = [
+        _product("1", "Small Discount", 90.0),
+        _product("2", "No Discount", 99.0),
+        _product("3", "Big Discount", 50.0),
+    ]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0), ("2", 100.0), ("3", 100.0))
 
-    with patch("rag.grocery_discounts.requests.get") as mock_get:
-        result = get_norwegian_term("butter")
+    result = find_discounted_products(client, store_groups=["KIWI"], threshold_pct=5.0)
 
-    assert result == "smør"
-    mock_get.assert_not_called()
+    assert [r["product_name"] for r in result] == ["Big Discount", "Small Discount", "No Discount"]
+
+
+def test_find_discounted_products_pauses_proactively_when_budget_is_low():
+    client = MagicMock()
+    client.rate_limit_remaining = 2
+    client.search_products.return_value = [_product("1", "Kyllingfilet", 80.0)]
+    client.get_price_history_bulk.return_value = _history_response(("1", 100.0))
+
+    with patch("rag.grocery_discounts.time.sleep") as mock_sleep:
+        find_discounted_products(client, store_groups=["KIWI"], threshold_pct=15.0)
+
+    assert any(call.args == (61.0,) for call in mock_sleep.call_args_list)

@@ -119,5 +119,9 @@ class RecipeRAGConfig:
     # treat as a starting point, not a tuned value.
     DISCOUNT_THRESHOLD_PCT: float = 15.0
     DISCOUNT_PRICE_HISTORY_DAYS: int = 30
+    # Cache the scheduled scan (refresh_discounts.py) writes to and /recipes/discounted
+    # reads from — see discounts_store.py for why this is a real scan-once-serve-many
+    # cache rather than a live Kassalapp call per request.
+    DISCOUNTS_DB_PATH: str = os.getenv("DISCOUNTS_DB_PATH", str(RAG_DIR / "discounts_cache" / "discounts.db"))
 
     RANDOM_SEED: int = 42

@@ -1,0 +1,7 @@
+services:
+  pipeline-service:
+    environment:
+      - LLM_API_STYLE=openwebui
+      - OLLAMA_BASE_URL=https://chat.bebs.dev/api
+    ports:
+      - "8011:8000"  # local-only override: exposed on the LAN too, for mobile app testing

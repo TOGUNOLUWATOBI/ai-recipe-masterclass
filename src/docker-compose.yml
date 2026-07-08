@@ -52,3 +52,9 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8010:8000"  # cloudflared's ingress rule for recipe.bebs.dev points here
+    volumes:
+      # Persists the weekly discount-scan cache (SQLite, see discounts_store.py) across
+      # restarts — populated by a host cron job running `docker compose exec
+      # pipeline-service python -m rag.refresh_discounts`, read by /recipes/discounted.
+      # Without this the cache would be wiped on every redeploy.
+      - ./discounts_cache:/app/rag/discounts_cache
