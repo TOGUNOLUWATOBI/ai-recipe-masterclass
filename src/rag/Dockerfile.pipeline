@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements-pipeline.txt
 COPY rag/__init__.py ./rag/__init__.py
 COPY rag/config.py ./rag/config.py
 COPY rag/generator.py ./rag/generator.py
+COPY rag/grocery_discounts.py ./rag/grocery_discounts.py
 COPY rag/pipeline.py ./rag/pipeline.py
 COPY rag/retrieval_client.py ./rag/retrieval_client.py
 COPY rag/pipeline_server.py ./rag/pipeline_server.py

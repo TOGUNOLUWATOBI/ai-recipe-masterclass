@@ -107,4 +107,17 @@ class RecipeRAGConfig:
     LLM_MAX_RETRIES: int = 3
     LLM_RETRY_DELAY: int = 5
 
+    # ===== GROCERY DISCOUNT SETTINGS (v2) =====
+    # Kassalapp (kassal.app) aggregates Norwegian grocery prices/discounts across major
+    # chains. No dedicated "on sale" endpoint exists — grocery_discounts.py computes
+    # discounts itself by comparing a product's current price against its recent price
+    # history. Get a key at kassal.app/profil/api (requires a free account).
+    KASSALAPP_API_KEY: str = os.getenv("KASSALAPP_API_KEY", "")
+    KASSALAPP_BASE_URL: str = "https://kassal.app/api/v1"
+    # A product currently priced this much below its recent average counts as "on sale" —
+    # unverified until we have a real key to calibrate against actual price-history data,
+    # treat as a starting point, not a tuned value.
+    DISCOUNT_THRESHOLD_PCT: float = 15.0
+    DISCOUNT_PRICE_HISTORY_DAYS: int = 30
+
     RANDOM_SEED: int = 42

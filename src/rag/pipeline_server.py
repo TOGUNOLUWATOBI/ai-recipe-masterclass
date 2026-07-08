@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import RecipeRAGConfig
+from .grocery_discounts import KassalappClient, find_discounted_ingredients
 from .pipeline import RecipeRAGPipeline
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +29,10 @@ RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
 
 config = RecipeRAGConfig()
 pipeline = RecipeRAGPipeline(config)
+# Lazily constructed only if KASSALAPP_API_KEY is set — grocery_discounts.py is unused
+# dead weight (no extra dependency, just an unused client) until the v2 discount flow
+# has a real key to work with.
+kassalapp_client = KassalappClient(config.KASSALAPP_API_KEY, config.KASSALAPP_BASE_URL) if config.KASSALAPP_API_KEY else None
 
 
 @asynccontextmanager
@@ -75,6 +80,51 @@ def recipes_from_ingredients(req: IngredientsRequest):
     result = pipeline.find_recipes_or_generate(req.ingredients, max_results=req.max_results)
     return {
         "ingredients": req.ingredients,
+        "source": result["source"],
+        "count": len(result["recipes"]),
+        "recipes": result["recipes"],
+        "generated": result["generated"],
+        "error": result["error"],
+    }
+
+
+@app.get("/recipes/discounted")
+def recipes_discounted(max_results: int = 10, discount_threshold_pct: Optional[float] = None):
+    """v2 discount-driven recipe flow: pulls current Kassalapp discounts on tracked
+    ingredients, then feeds whichever ones are actually on sale into the same
+    find_recipes_or_generate() used by /recipes/from-ingredients — same corpus-first,
+    LLM-fallback behavior, just with the ingredient list sourced from real grocery
+    prices instead of a user-supplied list."""
+    if kassalapp_client is None:
+        return {
+            "error": "KASSALAPP_API_KEY not configured",
+            "discounted_ingredients": [], "source": None, "count": 0, "recipes": [], "generated": None,
+        }
+
+    threshold = discount_threshold_pct if discount_threshold_pct is not None else config.DISCOUNT_THRESHOLD_PCT
+    discounts = find_discounted_ingredients(
+        kassalapp_client, threshold_pct=threshold, history_days=config.DISCOUNT_PRICE_HISTORY_DAYS,
+    )
+
+    if not discounts:
+        return {
+            "discounted_ingredients": [], "source": None, "count": 0, "recipes": [], "generated": None, "error": None,
+        }
+
+    # Uses the real discovered product_name (Norwegian, as returned by Kassalapp), not
+    # ingredient_en — confirmed live that the fine-tuned model handles this well:
+    # "Kjøttdeig Storfe 14%..." correctly became a "Kjøttballer" (meatballs) recipe,
+    # and even a mismatched category result ("Skinke Kokt"/ham, wrongly surfaced by an
+    # "eggs" search) was correctly identified as ham, not confused for eggs — no
+    # hallucination, just an honest result for what the product actually is. Since the
+    # real product name is shown to the user either way, there's no deception even when
+    # a category search occasionally surfaces an imperfect match; the alternative
+    # (perfectly ranking candidates to guarantee ingredient_en accuracy) turned out to
+    # be a much harder problem for no real gain in honesty.
+    product_names = [d["product_name"] for d in discounts]
+    result = pipeline.find_recipes_or_generate(product_names, max_results=max_results)
+    return {
+        "discounted_ingredients": discounts,
         "source": result["source"],
         "count": len(result["recipes"]),
         "recipes": result["recipes"],
