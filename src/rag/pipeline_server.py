@@ -21,7 +21,6 @@ from pydantic import BaseModel
 
 from .config import RecipeRAGConfig
 from .discounts_store import get_latest_snapshot
-from .grocery_discounts import KassalappClient
 from .pipeline import RecipeRAGPipeline
 
 logging.basicConfig(level=logging.INFO)
@@ -31,10 +30,6 @@ RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
 
 config = RecipeRAGConfig()
 pipeline = RecipeRAGPipeline(config)
-# Lazily constructed only if KASSALAPP_API_KEY is set — grocery_discounts.py is unused
-# dead weight (no extra dependency, just an unused client) until the v2 discount flow
-# has a real key to work with.
-kassalapp_client = KassalappClient(config.KASSALAPP_API_KEY, config.KASSALAPP_BASE_URL) if config.KASSALAPP_API_KEY else None
 
 
 @asynccontextmanager
@@ -83,6 +78,15 @@ def query_stream(req: QueryRequest):
 class IngredientsRequest(BaseModel):
     ingredients: List[str]
     max_results: Optional[int] = 10
+    # True only when every ingredient is a real Tjek grocery-flyer product name (e.g.
+    # sent by DealDetailScreen in the mobile app) -- routes to
+    # normalize_grocery_heading() via pipeline.find_recipes_or_generate()'s normalize
+    # param. Must stay False (the default) for arbitrary user-typed free text (e.g.
+    # IngredientsScreen): an adversarial review confirmed normalize_grocery_heading()
+    # corrupts real English phrases (e.g. "extra virgin olive oil" -> "virgin olive
+    # oil"), since its glossary/noise-token suffix matching was only validated against
+    # real Norwegian Tjek headings, never English vocabulary.
+    is_grocery_product: bool = False
 
 
 @app.post("/recipes/from-ingredients")
@@ -92,7 +96,9 @@ def recipes_from_ingredients(req: IngredientsRequest):
     when the corpus has nothing (e.g. an obscure dish/cuisine not covered). Foundation
     for the v2 discount-driven recipe flow — feed it currently discounted ingredients,
     get back candidates to choose from instead of one generated answer."""
-    result = pipeline.find_recipes_or_generate(req.ingredients, max_results=req.max_results)
+    result = pipeline.find_recipes_or_generate(
+        req.ingredients, max_results=req.max_results, normalize=req.is_grocery_product,
+    )
     return {
         "ingredients": req.ingredients,
         "source": result["source"],
@@ -105,23 +111,18 @@ def recipes_from_ingredients(req: IngredientsRequest):
 
 @app.get("/recipes/discounted")
 def recipes_discounted(max_results: int = 10, include_recipes: bool = True):
-    """v2 discount-driven recipe flow: reads the latest cached Kassalapp discount scan
-    (see discounts_store.py — populated by a cron-triggered refresh_discounts.py, not a
-    live call on every request) and, unless include_recipes=false, feeds whichever
-    ingredients are on sale into the same find_recipes_or_generate() used by
-    /recipes/from-ingredients — same corpus-first, LLM-fallback behavior, just with the
-    ingredient list sourced from real grocery prices instead of a user-supplied list.
+    """v2 discount-driven recipe flow: reads the latest cached Tjek (etilbudsavis.dk)
+    flyer-offer scan (see discounts_store.py — populated by a cron-triggered
+    refresh_discounts.py, not a live call on every request) and, unless
+    include_recipes=false, feeds whichever products are currently on offer into the same
+    find_recipes_or_generate() used by /recipes/from-ingredients — same corpus-first,
+    LLM-fallback behavior, just with the ingredient list sourced from real grocery flyer
+    prices instead of a user-supplied list.
 
     include_recipes=false skips that generation pass entirely and returns just the
     discount list (fast — no LLM call). Built for a deals-browsing UI that needs the
     price/store/image list immediately and only wants a recipe for the one item a user
     actually taps, fetched on demand via /recipes/from-ingredients instead."""
-    if kassalapp_client is None:
-        return {
-            "error": "KASSALAPP_API_KEY not configured", "updated_at": None,
-            "discounted_ingredients": [], "source": None, "count": 0, "recipes": [], "generated": None,
-        }
-
     discounts, updated_at = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
 
     if not discounts or not include_recipes:
@@ -130,16 +131,12 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True):
             "generated": None, "error": None, "updated_at": updated_at,
         }
 
-    # Uses the real discovered product_name (Norwegian, as returned by Kassalapp), not
-    # the swept category — confirmed live that the fine-tuned model handles this well:
-    # "Kjøttdeig Storfe 14%..." correctly became a "Kjøttballer" (meatballs) recipe,
-    # and even a mismatched category result ("Skinke Kokt"/ham, wrongly surfaced by an
-    # "eggs" search) was correctly identified as ham, not confused for eggs — no
-    # hallucination, just an honest result for what the product actually is. Since the
-    # real product name is shown to the user either way, there's no deception even when
-    # a category search occasionally surfaces an imperfect match; the alternative
-    # (perfectly ranking candidates to guarantee category accuracy) turned out to
-    # be a much harder problem for no real gain in honesty.
+    # Uses the real discovered product_name (Norwegian, as returned directly by Tjek's
+    # own flyer heading), not any category label — confirmed live that the fine-tuned
+    # model handles this well: "Kjøttdeig Storfe 14%..." correctly became a
+    # "Kjøttballer" (meatballs) recipe. Since the real flyer product name is shown to
+    # the user either way, there's no deception even on an unusual heading; the source
+    # data itself is a real, officially-published offer, not an inferred or fuzzy match.
     #
     # Capped at 30 — the discount scan now returns every product per store (up to ~1400
     # across all stores), not just discounted ones, and joining all of that into one
@@ -148,7 +145,10 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True):
     # cost more. discounts is already sorted with confirmed discounts first, so this
     # naturally keeps the real deals.
     product_names = [d["product_name"] for d in discounts[:30]]
-    result = pipeline.find_recipes_or_generate(product_names, max_results=max_results)
+    # Always normalize=True here, unconditionally, with no request-side flag needed --
+    # unlike /recipes/from-ingredients, this list is always sourced from the real Tjek
+    # discounts snapshot (see get_latest_snapshot() above), never arbitrary user input.
+    result = pipeline.find_recipes_or_generate(product_names, max_results=max_results, normalize=True)
     return {
         "discounted_ingredients": discounts,
         "source": result["source"],

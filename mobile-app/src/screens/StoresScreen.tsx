@@ -9,7 +9,7 @@ import { StoreCard } from "../components/StoreCard";
 import type { StoreGroup, TilbudStackParamList } from "../navigation/types";
 import type { DiscountedProduct, DiscountedResponse } from "../types/api";
 
-const FALLBACK_STORE_LABEL = "Andre tilbud";
+const FALLBACK_STORE_LABEL = "Other deals";
 
 export function groupByStore(deals: DiscountedProduct[]): StoreGroup[] {
   const groups = new Map<string, StoreGroup>();
@@ -30,7 +30,7 @@ function formatUpdatedAt(iso: string | null): string {
   const date = new Date(iso);
   const datePart = date.toLocaleDateString("nb-NO");
   const timePart = date.toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
-  return `Oppdatert ${datePart} ${timePart}`;
+  return `Updated ${datePart} ${timePart}`;
 }
 
 export function StoresScreen() {
@@ -73,7 +73,7 @@ export function StoresScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
-        <Text style={styles.heading}>Tilbud</Text>
+        <Text style={styles.heading}>Deals</Text>
         {response?.updated_at ? <Text style={styles.updatedAt}>{formatUpdatedAt(response.updated_at)}</Text> : null}
       </View>
 
@@ -88,7 +88,7 @@ export function StoresScreen() {
         contentContainerStyle={styles.scrollContent}
       >
         {!loading && groups.length === 0 && !errorMessage ? (
-          <Text style={styles.emptyText}>Ingen varer funnet akkurat nå — sjekk igjen senere.</Text>
+          <Text style={styles.emptyText}>No items found right now — check back later.</Text>
         ) : (
           groups.map((group) => (
             <StoreCard

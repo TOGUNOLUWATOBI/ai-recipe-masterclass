@@ -1,336 +1,218 @@
-"""Grocery discount detection via Kassalapp (kassal.app) -- a Norwegian grocery
-price-comparison API. Powers the discount-driven recipe flow: browse real grocery
-products store by store, then feed them into
-RecipeRAGPipeline.find_recipes_or_generate() as the ingredient list.
+"""Grocery discount detection via Tjek (etilbudsavis.dk) -- a Nordic weekly-flyer
+aggregation API.
 
-No dedicated "on sale" endpoint or discount flag exists anywhere in Kassalapp's API
-(confirmed against the docs at kassal.app/api/docs, the full ProductResource schema, and
-all ~49 real product labels -- none are sale-related, all are certifications like
-organic/halal/vegan or packaging-material tags). find_discounted_products() therefore
-returns EVERY usable food product per swept store, not just ones it can confirm are
-discounted -- our own current-price-vs-history comparison is informative when available,
-but is not reliable enough to use as an inclusion filter: confirmed live that a real,
-significant fraction of products (roughly half, in one live sample of "pølser"/sausage
-products across several stores) have NO price history at all, so a real, currently
-advertised discount can be silently invisible to this method purely because Kassalapp
-hasn't recorded enough history for that specific product yet. Filtering strictly by a
-computed discount_pct would (and did) hide a large share of genuinely on-sale food next
-to items we simply can't evaluate -- there's no way to tell those two cases apart from
-the API alone, so both must be shown, with a discount badge attached only when the
-comparison is actually possible and meaningful. Results are sorted with the highest
-confirmed discounts first; everything else (including items with no computable discount
-at all) follows.
+Tjek's public API surfaces REAL, officially-published weekly flyer offers --
+each with the retailer's own price and, when they chose to advertise a discount, the
+original pre_price too (confirmed live, 2026-07-08: e.g. "COOP KYLLINGFILET 690G" priced
+99.90 kr, was 129.90 kr, sourced directly from Coop's own published flyer, with real
+run_from/run_till validity dates). No API key is required, and no rate limiting was
+observed across 15 rapid requests (all 200 OK).
 
-Sweeps by STORE (GROCERY_STORE_GROUPS), not by a curated ingredient/category roster --
-confirmed live that Kassalapp's /products endpoint accepts a store filter (e.g.
-store=KIWI) with no location required, returning that chain's catalog nationally. A
-single store query (size=100, unique=1) already surfaces excellent category diversity
-(96 distinct leaf categories observed in one 100-product sample) at a fraction of the
-API cost of sweeping category-by-category: 14 grocery store groups need only ~28
-Kassalapp calls total (one search + one batched price-history call per store),
-comfortably under the account-wide 60-request rate limit -- unlike the category-sweep
-approach this replaces, a full run typically completes without needing the rate-limit
-cooldown pause at all.
+Norway coverage: the /dealers endpoint ignores country_id for non-Danish countries and
+always returns Danish dealers regardless (confirmed live) -- there is no way to
+enumerate Norwegian stores from the API itself. NORWEGIAN_STORES is therefore a
+hand-verified list of dealer IDs (found via
+github.com/olgasafonova/tilbudstrolden-mcp, an open-source Nordic meal-planning MCP
+server that had already solved this exact problem) -- every one of these was
+independently confirmed live to return substantial current offer data (17-100 offers
+per store, ~700 total across all 11).
 
-Categorization for display grouping happens client-side, using each product's own
-top-level (depth=-2) category from its embedded category array -- confirmed live this
-gives a clean, small set of aisle-like buckets (Kjøtt, Frukt & grønt, Meieri & egg, Ost,
-Bakeri, ...) across real multi-store samples, unlike the much more granular depth=0 leaf
-category (96 distinct leaf names in the same 100-product sample -- too fragmented to
-group by). A handful of top-level buckets aren't food at all (Personlige artikler,
-Hus & hjem, Barneprodukter) and are filtered out.
+No product-category data exists for Norwegian offers (category_ids came back empty on
+every Norwegian offer checked) -- there is deliberately no grouping-by-aisle here
+anymore, only per-store listings of real flyer items; the product's own name (heading)
+is descriptive enough on its own. A short non-food keyword filter (NON_FOOD_KEYWORDS)
+excludes the handful of genuinely non-food items real flyers mix in alongside groceries
+(sunscreen, soap, batteries, toilet paper, ...) -- confirmed live by scanning ~500 real
+headings across 5 stores, about 5% were non-food. Matching is done against whole
+word/token SUFFIXES within each heading, not a plain substring of the full string --
+confirmed live this matters: a naive substring check for "krem" (cream/lotion) would
+wrongly exclude "iskrem" (ice cream), so only full compounds like "solkrem" (sunscreen)
+are listed, never the bare ambiguous root.
 
-Store groups are Kassalapp's real, documented enum (confirmed against their OpenAPI spec
-at kassal.app/docs/api.json) -- GROCERY_STORE_GROUPS is deliberately the conservative
-subset: clearly non-grocery chains (ARK/NORLI/ADLIBRIS are bookstores;
-COOP_BYGGMIX/COOP_OBS_BYGG/COOP_ELEKTRO are hardware/electronics) and several
-grocery-adjacent-but-uncertain chains (Havaristen, Holdbart, Matkroken, Naerbutikken,
-Fudi, Engrossnett) are excluded rather than guessed at.
-
-IMPORTANT (confirmed live, 2026-07-08): the price_history array embedded directly in
-/products search results is NOT a reliable "recent" window -- three sample products
-showed embedded histories spanning 2022-11 to 2023-01, 2024-12 to 2025-04, and 2026-06 to
-2026-07 respectively, wildly inconsistent and often stale by years. Do NOT use the
-embedded price_history to compute a discount -- always use the dedicated
-/products/prices-bulk?days=N endpoint (via get_price_history_bulk), which reliably
-returns a real recent window (confirmed against several products).
-
-Kassalapp enforces an account-wide rate limit of 60 requests per rolling window, shared
-across all endpoints (confirmed live via X-RateLimit-Remaining, present on every
-response) with no Retry-After or X-RateLimit-Reset header ever provided -- see
-_maybe_wait_for_rate_limit for how a full sweep proactively avoids exhausting it.
-
-VERIFIED LIVE (2026-07-06, 2026-07-08) against a real API key -- response shapes, store
-group enum, category taxonomy/hierarchy, price_history reliability, rate limits, and
-per-store category diversity are all confirmed empirically, not assumed from
-documentation alone.
+VERIFIED LIVE (2026-07-08) against the real public API -- offer shape, discount fields,
+Norwegian dealer IDs and their offer volumes, absence of rate limiting, and the
+non-food-keyword false-positive risk described above are all confirmed empirically, not
+assumed from documentation alone.
 """
 
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-# Kassalapp's real store-group enum (confirmed against their OpenAPI spec), filtered to
-# grocery/food chains -- excludes clearly non-grocery groups (ARK/NORLI/ADLIBRIS are
-# bookstores; COOP_BYGGMIX/COOP_OBS_BYGG/COOP_ELEKTRO are hardware/electronics) and
-# several grocery-adjacent-but-unconfirmed chains (Havaristen, Holdbart, Matkroken,
-# Naerbutikken, Fudi, Engrossnett) -- deliberately excluded rather than guessed at.
-#
-# Also excludes Coop's specific store-format codes (COOP_MARKED, COOP_MEGA, COOP_PRIX,
-# COOP_OBS) -- confirmed live these return ZERO products even at size=100, and
-# COOP_EXTRA returns exactly one (non-food). Coop's real catalog data in Kassalapp lives
-# under the generic COOP_NO code instead, not per physical-format banner -- these four
-# would be pure wasted API calls (2 each) for no data, and COOP_EXTRA one call for a
-# single irrelevant result.
-GROCERY_STORE_GROUPS = [
-    "MENY_NO", "SPAR_NO", "JOKER_NO", "ODA_NO", "BUNNPRIS", "KIWI", "REMA_1000",
-    "EUROPRIS_NO", "COOP_NO",
+BASE_URL = "https://api.etilbudsavis.dk/v2"
+USER_AGENT = "ai-recipe-masterclass/1.0"
+
+# Hand-verified Norwegian dealer IDs (name -> dealer_id) -- the /dealers endpoint cannot
+# enumerate these itself for non-Danish countries (see module docstring). Sourced from
+# github.com/olgasafonova/tilbudstrolden-mcp's locale data and independently confirmed
+# live: every one of these returned substantial real current offers (17-100 each) on
+# 2026-07-08.
+NORWEGIAN_STORES = {
+    "Rema 1000": "faa0Ym",
+    "Kiwi": "257bxm",
+    "Meny": "4333pm",
+    "Coop Prix": "f5d5lm",
+    "Extra": "80742m",
+    "Bunnpris": "5b11sm",
+    "Obs": "51dawm",
+    "Spar": "c062vm",
+    "Joker": "b3e8Fm",
+    "Gigaboks": "5vk-xt",
+    "Holdbart": "pR2h9x",
+}
+
+# Real flyers mix in a handful of non-food items alongside groceries (confirmed live by
+# scanning ~500 real Norwegian headings across 5 stores). Deliberately specific full
+# compounds (e.g. "solkrem", not bare "krem") -- see module docstring for why: a bare
+# "krem" would wrongly match "iskrem" (ice cream).
+NON_FOOD_KEYWORDS = [
+    "lotion", "solkrem", "sololje",
+    "sjampo", "shampoo", "hårbalsam", "hårspray",
+    "dusjsåpe", "håndsåpe", "sitronsåpe", "kjøkkensåpe",
+    "tannkrem", "tannbørste",
+    "bleie", "bleier",
+    "vaskemiddel", "oppvaskmiddel", "oppvasktabletter", "oppvaskbørste", "klesvask",
+    "toalettpapir", "tørkerull", "kjøkkenrull", "serviett",
+    "avfallspose", "søppelpose",
+    "batteri", "batterier",
+    "lyspære",
+    "deodorant",
+    "barberhøvel", "barberskum",
+    "vaselin",
 ]
 
-# Top-level (depth=-2) categories that aren't food -- confirmed live these appear
-# alongside real groceries in a per-store product listing (Kassalapp isn't a
-# grocery-only catalog).
-NON_FOOD_TOP_LEVEL_CATEGORIES = {"Personlige artikler", "Hus & hjem", "Barneprodukter"}
 
+class TjekClient:
+    """Thin wrapper around Tjek's public offers API -- no API key or auth of any kind
+    required (confirmed live)."""
 
-class KassalappClient:
-    def __init__(self, api_key: str, base_url: str, timeout: float = 15.0):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
-        self.rate_limit_remaining: Optional[int] = None
 
-    def _headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
-
-    def _update_rate_limit(self, response: requests.Response) -> None:
-        remaining = response.headers.get("X-RateLimit-Remaining")
-        if remaining is not None:
-            try:
-                self.rate_limit_remaining = int(remaining)
-            except ValueError:
-                pass
-
-    def search_products(
-        self,
-        search: Optional[str] = None,
-        category: Optional[str] = None,
-        store: Optional[str] = None,
-        unique: Optional[int] = None,
-        size: int = 5,
-    ) -> List[Dict[str, Any]]:
-        """search, category, and store are independent filters. store (e.g. "KIWI",
-        "COOP_NO") scopes to one chain's catalog nationally -- no location required
-        (confirmed live). unique=1 collapses duplicate EAN results server-side."""
-        params: Dict[str, Any] = {"size": size}
-        if search:
-            params["search"] = search
-        if category:
-            params["category"] = category
-        if store:
-            params["store"] = store
-        if unique is not None:
-            params["unique"] = unique
+    def get_store_offers(self, dealer_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         resp = requests.get(
-            f"{self.base_url}/products",
-            headers=self._headers(),
-            params=params,
+            f"{BASE_URL}/offers",
+            params={"dealer_id": dealer_id, "limit": limit},
+            headers={"User-Agent": USER_AGENT},
             timeout=self.timeout,
         )
-        self._update_rate_limit(resp)
-        resp.raise_for_status()
-        return resp.json().get("data", [])
-
-    def get_price_history_bulk(self, eans: List[str], days: int = 30, aggregation: str = "avg") -> Dict[str, Any]:
-        """Max 100 EANs per call per the API docs -- find_discounted_products batches
-        every candidate from one swept store into a single call, comfortably staying
-        under that limit (a single store query is itself capped at size=100)."""
-        resp = requests.post(
-            f"{self.base_url}/products/prices-bulk",
-            headers=self._headers(),
-            json={"eans": eans, "days": days, "aggregation": aggregation},
-            timeout=self.timeout,
-        )
-        self._update_rate_limit(resp)
         resp.raise_for_status()
         return resp.json()
 
 
-RATE_LIMIT_SAFETY_THRESHOLD = 3
-RATE_LIMIT_COOLDOWN_SECONDS = 61.0
+def _compute_unit_price(
+    price: float, quantity: Optional[Dict[str, Any]]
+) -> Optional[Tuple[float, str]]:
+    """Converts a per-package price into an approximate kr-per-kg/L/piece figure, so the
+    app can show a comparable unit price. Mirrors the same gram/mL-to-kg/L scaling
+    tilbudstrolden-mcp's own client uses.
 
-
-def _maybe_wait_for_rate_limit(
-    client: KassalappClient,
-    threshold: int = RATE_LIMIT_SAFETY_THRESHOLD,
-    cooldown: float = RATE_LIMIT_COOLDOWN_SECONDS,
-) -> None:
-    """Proactively pauses once the tracked budget gets low rather than reactively
-    handling 429s after the fact. Guarded with isinstance rather than a plain None
-    check so a test double (MagicMock) whose .rate_limit_remaining was never explicitly
-    set -- not a real int -- is correctly treated as unknown, not low."""
-    remaining = client.rate_limit_remaining
-    if isinstance(remaining, int) and remaining <= threshold:
-        logger.info(
-            f"Kassalapp rate limit budget low ({remaining} remaining) -- "
-            f"pausing {cooldown}s to let it reset before continuing the scan"
-        )
-        time.sleep(cooldown)
-        client.rate_limit_remaining = None
-
-
-def _percent_below(current: float, reference: float) -> float:
-    if reference <= 0:
-        return 0.0
-    return max(0.0, (reference - current) / reference * 100)
-
-
-def _extract_reference_price(history_response: Dict[str, Any], ean: str) -> Optional[float]:
-    """Averages the daily price_history entries for the given EAN, from the dedicated
-    /products/prices-bulk response -- never from the price_history sometimes embedded
-    directly in /products search results, which was found to span wildly inconsistent
-    and often stale date ranges (see module docstring) and must never be used for this
-    calculation."""
-    try:
-        for entry in history_response.get("data", []):
-            if entry.get("ean") == ean:
-                prices = [p["price"] for p in entry.get("price_history", []) if p.get("price") is not None]
-                if prices:
-                    return sum(prices) / len(prices)
-    except (AttributeError, TypeError, ValueError) as e:
-        logger.warning(f"Unexpected prices-bulk response shape for EAN {ean}: {e}")
+    Returns (value, unit_label) rather than a bare float -- the quantity basis varies
+    per product (kg vs L vs piece), so the caller needs the label to render a correct
+    '/kg', '/L', or '/pc' suffix instead of a misleading one-size-fits-all '/unit' (the
+    math here was always correct per-symbol; only the label was missing). unit_label is
+    always one of 'kg', 'L', or 'pc' -- g/ml are normalized up to kg/L (matching
+    whichever the original symbol was), 'l'/'L' both normalize to the label 'L', and the
+    pieces fallback branch is labeled 'pc'."""
+    if not quantity:
+        return None
+    unit_info = quantity.get("unit") or {}
+    symbol = unit_info.get("symbol")
+    size = (quantity.get("size") or {}).get("from")
+    if symbol and size and size > 0:
+        if symbol == "g":
+            return round((price / size) * 1000, 2), "kg"
+        if symbol == "ml":
+            return round((price / size) * 1000, 2), "L"
+        if symbol == "dl":
+            return round((price / size) * 10, 2), "L"
+        if symbol == "kg":
+            return round(price / size, 2), "kg"
+        if symbol in ("l", "L"):
+            return round(price / size, 2), "L"
+        if symbol in ("pcs", "stk"):
+            return round(price / size, 2), "pc"
+        # Some other/unrecognized symbol -- don't give up yet, a usable "pieces"
+        # count (checked below) can still exist alongside an unhandled symbol.
+    pieces = (quantity.get("pieces") or {}).get("from")
+    if pieces and pieces > 0:
+        return round(price / pieces, 2), "pc"
     return None
 
 
-_BABY_FOOD_AGE_PATTERN = re.compile(r"\d+\s*mnd\b")
-
-
-def _is_baby_food(product: Dict[str, Any]) -> bool:
-    """Kept as a secondary signal alongside the top-level-category exclusion in
-    _is_non_food -- catches baby food that might not be tagged under the
-    "Barneprodukter" top-level category."""
-    categories = [c.get("name", "") for c in (product.get("category") or [])]
-    if any(cat in ("Barnemat", "Barneprodukter") for cat in categories):
-        return True
-    if "barnemat" in (product.get("brand") or "").lower():
-        return True
-    return bool(_BABY_FOOD_AGE_PATTERN.search((product.get("name") or "").lower()))
-
-
-def _top_level_category(product: Dict[str, Any]) -> Optional[str]:
-    """The broadest category name for a product -- confirmed live this gives a clean,
-    small set of aisle-like buckets (~18 across a real multi-store sample: Kjøtt,
-    Frukt & grønt, Meieri & egg, Ost, ...) suitable for grouping discounted products for
-    display, unlike the much more granular leaf category (96 distinct leaf names in the
-    same sample). Uses whichever entry has the MINIMUM depth, not a hardcoded -2 --
-    confirmed live that category hierarchy depth isn't consistent across product types:
-    most have 3 levels (-2/-1/0), but e.g. Coca-Cola's only has 2
-    ([{"depth": -1, "name": "Drikke"}, {"depth": 0, "name": "Brus"}], no -2 entry at
-    all) -- a hardcoded depth=-2 check silently missed these, dumping otherwise
-    well-categorized products into the "Annet" fallback."""
-    categories = product.get("category") or []
-    if not categories:
-        return None
-    return min(categories, key=lambda c: c.get("depth", 0)).get("name")
-
-
-def _is_non_food(product: Dict[str, Any]) -> bool:
-    """A per-store product listing isn't food-only -- confirmed live that a single
-    store query surfaces top-level categories like "Personlige artikler" (personal
-    care) and "Hus & hjem" (household goods) alongside real groceries."""
-    return _top_level_category(product) in NON_FOOD_TOP_LEVEL_CATEGORIES
-
-
-def _filter_usable_candidates(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Every non-baby-food, food-category product with a usable ean+current_price --
-    the full candidate pool for a store sweep. Every usable candidate here gets
-    evaluated for a discount, not just one hand-picked representative."""
-    usable = [p for p in products if p.get("ean") and p.get("current_price") is not None]
-    return [p for p in usable if not _is_non_food(p) and not _is_baby_food(p)]
+def _is_non_food(heading: str) -> bool:
+    """Real flyers mix in a handful of non-food items alongside groceries -- checked as
+    a suffix against each individual word/token in the heading (split on
+    whitespace/hyphen/slash), not a plain substring of the whole string, so this can't
+    accidentally match a food word that happens to contain a shorter non-food word
+    inside it (see NON_FOOD_KEYWORDS and the module docstring for the "iskrem" case)."""
+    tokens = re.findall(r"[^\s\-/]+", heading.lower())
+    return any(token.endswith(kw) for token in tokens for kw in NON_FOOD_KEYWORDS)
 
 
 def find_discounted_products(
-    client: KassalappClient,
-    store_groups: List[str] = GROCERY_STORE_GROUPS,
-    threshold_pct: float = 15.0,
-    history_days: int = 30,
-    size: int = 100,
+    client: TjekClient,
+    stores: Dict[str, str] = NORWEGIAN_STORES,
+    limit: int = 100,
 ) -> List[Dict[str, Any]]:
-    """Sweeps every grocery store group and returns EVERY usable food product each store
-    turns up -- not just ones we can confirm are discounted (see module docstring for
-    why: no official sale flag exists, and a real fraction of products have no price
-    history at all, making "no computable discount" indistinguishable from "genuinely
-    not on sale"). Each item is labeled with its own top-level Kassalapp category (e.g.
-    "Kjøtt", "Frukt & grønt") for display grouping, since the sweep axis here is the
-    store, not a curated ingredient/category roster. A product gets discount_pct/
-    reference_price attached only when its current price is at least threshold_pct
-    below its own recent (history_days-day) average -- otherwise both are None, so the
-    caller can render a badge only where the comparison is real and meaningful rather
-    than showing a misleading 0%. The returned list is sorted with confirmed discounts
-    first (highest first); everything else follows in sweep order.
+    """Fetches every current flyer offer for each known Norwegian store and returns
+    them all -- not filtered by discount, since the value here is in real,
+    currently-published flyer items whether or not the retailer chose to show an
+    explicit "was X" price. Each item gets discount_pct/reference_price attached only
+    when the retailer published an explicit pre_price that is genuinely higher than
+    the current price (a real, official discount, never inferred) -- otherwise both
+    are None. A short keyword filter excludes genuinely non-food items (see
+    NON_FOOD_KEYWORDS). Returns everything sorted with confirmed discounts first
+    (highest percentage first); everything else follows in fetch order.
 
-    Each swept store costs at most 2 Kassalapp calls regardless of how many candidates
-    it turns up -- one search (unique=1 collapses duplicate EANs server-side), plus one
-    batched price-history-bulk call covering every candidate's EAN at once (skipped
-    entirely if a store turns up no usable candidates at all). Deliberately does NOT
-    deduplicate by EAN across different stores -- the same product can be independently
-    priced (and independently discounted) at more than one chain, and this is now a
-    per-store browse, not a single merged "is this discounted anywhere" list, so every
-    store's own listing must be shown in full."""
+    One request per store total -- no separate price-history call needed, since the
+    discount (when the retailer publishes one) comes directly in the same response.
+    No rate limiting was observed against this public API, so no proactive throttling
+    logic is needed here -- just a light courtesy delay between requests."""
     discovered: List[Dict[str, Any]] = []
 
-    for i, store in enumerate(store_groups):
+    for i, (store_name, dealer_id) in enumerate(stores.items()):
         if i > 0:
-            time.sleep(0.3)
-        _maybe_wait_for_rate_limit(client)
-
+            time.sleep(0.2)
         try:
-            products = client.search_products(store=store, size=size, unique=1)
+            offers = client.get_store_offers(dealer_id, limit=limit)
         except requests.RequestException as e:
-            logger.error(f"Kassalapp search failed for store {store!r}: {e}")
+            logger.error(f"Tjek request failed for store {store_name!r}: {e}")
             continue
 
-        candidates = _filter_usable_candidates(products)
-        if not candidates:
-            continue
-        by_ean = {p["ean"]: p for p in candidates}
+        for offer in offers:
+            heading = offer.get("heading")
+            if not heading or _is_non_food(heading):
+                continue
+            pricing = offer.get("pricing") or {}
+            price = pricing.get("price")
+            if price is None:
+                continue
 
-        time.sleep(0.3)
-        _maybe_wait_for_rate_limit(client)
-        history = None
-        try:
-            history = client.get_price_history_bulk(list(by_ean.keys()), days=history_days, aggregation="avg")
-        except requests.RequestException as e:
-            logger.error(f"Kassalapp price history failed for store {store!r}: {e}")
-            # Still shown below, just without discount info -- a failed price lookup
-            # isn't a reason to hide the store's products entirely.
-
-        for ean, product in by_ean.items():
+            pre_price = pricing.get("pre_price")
             discount_pct = None
             reference_price = None
-            raw_reference = _extract_reference_price(history, ean) if history is not None else None
-            if raw_reference is not None:
-                pct = _percent_below(product["current_price"], raw_reference)
-                if pct >= threshold_pct:
-                    discount_pct = round(pct, 1)
-                    reference_price = raw_reference
+            if pre_price is not None and pre_price > price > 0:
+                discount_pct = round((pre_price - price) / pre_price * 100, 1)
+                reference_price = pre_price
 
-            product_store = product.get("store") or {}
+            dealer = offer.get("dealer") or offer.get("branding") or {}
+            unit_price_result = _compute_unit_price(price, offer.get("quantity"))
             discovered.append({
-                "category": _top_level_category(product) or "Annet",
-                "product_name": product.get("name"),
-                "current_price": product["current_price"],
+                "product_name": heading,
+                "current_price": price,
                 "reference_price": reference_price,
                 "discount_pct": discount_pct,
-                "unit_price": product.get("current_unit_price"),
-                "image_url": product.get("image"),
-                "store_name": product_store.get("name"),
-                "store_logo_url": product_store.get("logo"),
+                "unit_price": unit_price_result[0] if unit_price_result else None,
+                "unit_price_unit": unit_price_result[1] if unit_price_result else None,
+                "image_url": (offer.get("images") or {}).get("view"),
+                "store_name": dealer.get("name") or store_name,
+                "store_logo_url": dealer.get("logo"),
             })
 
     discovered.sort(key=lambda d: (d["discount_pct"] is None, -(d["discount_pct"] or 0)))
@@ -340,14 +222,9 @@ def find_discounted_products(
 if __name__ == "__main__":
     import json
 
-    from .config import RecipeRAGConfig
-
-    config = RecipeRAGConfig()
-    if not config.KASSALAPP_API_KEY:
-        raise SystemExit("KASSALAPP_API_KEY not set -- add it to src/rag/.env")
-    client = KassalappClient(config.KASSALAPP_API_KEY, config.KASSALAPP_BASE_URL)
-
-    print(f"Sweeping {len(GROCERY_STORE_GROUPS)} store groups...")
+    client = TjekClient()
+    print(f"Sweeping {len(NORWEGIAN_STORES)} Norwegian stores via Tjek...")
     discovered = find_discounted_products(client)
-    print(f"\n--- {len(discovered)} discounted products found ---")
-    print(json.dumps(discovered, indent=2, ensure_ascii=False))
+    with_discount = sum(1 for d in discovered if d["discount_pct"] is not None)
+    print(f"\n--- {len(discovered)} products found, {with_discount} with a confirmed discount ---")
+    print(json.dumps(discovered[:10], indent=2, ensure_ascii=False))

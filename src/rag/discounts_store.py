@@ -1,9 +1,9 @@
-"""SQLite-backed cache for the Kassalapp discount scan. Kassalapp's underlying grocery
-offers refresh roughly weekly (like any Norwegian "kundeavis"), not per-request — so
-having /recipes/discounted run a live Kassalapp scan on every hit was needless load
-against Kassalapp's and MyMemory's rate limits for data that's already stale by the next
-request. A scheduled job (refresh_discounts.py, run via cron — see deployment notes) is
-the only writer; the API (pipeline_server.py) only ever reads the latest snapshot here.
+"""SQLite-backed cache for the grocery discount scan. The underlying flyer offers
+refresh roughly weekly (like any Norwegian "kundeavis"), not per-request — so having
+/recipes/discounted run a live scan on every hit would be needless load for data
+that's already stale by the next request. A scheduled job (refresh_discounts.py, run
+via cron — see deployment notes) is the only writer; the API (pipeline_server.py) only
+ever reads the latest snapshot here.
 
 Deliberately a plain relational table, not a JSON blob: every discounted-ingredient
 record already shares the same fixed set of fields (see grocery_discounts.py), so there's
@@ -18,12 +18,12 @@ from typing import Any, Dict, List, Optional, Tuple
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS discounts (
     scanned_at TEXT NOT NULL,
-    category TEXT NOT NULL,
     product_name TEXT,
     current_price REAL,
     reference_price REAL,
     discount_pct REAL,
     unit_price REAL,
+    unit_price_unit TEXT,
     image_url TEXT,
     store_name TEXT,
     store_logo_url TEXT
@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS scan_meta (
 """
 
 _COLUMNS = [
-    "category", "product_name", "current_price", "reference_price",
-    "discount_pct", "unit_price", "image_url", "store_name", "store_logo_url",
+    "product_name", "current_price", "reference_price",
+    "discount_pct", "unit_price", "unit_price_unit", "image_url", "store_name", "store_logo_url",
 ]
 
 

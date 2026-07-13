@@ -10,23 +10,23 @@ from rag.discounts_store import get_latest_snapshot, save_snapshot
 
 _SAMPLE = [
     {
-        "category": "Kylling",
         "product_name": "Kyllingfilet 500g",
         "current_price": 80.0,
         "reference_price": 100.0,
         "discount_pct": 20.0,
         "unit_price": 160.0,
+        "unit_price_unit": "kg",
         "image_url": "https://example.com/chicken.jpg",
         "store_name": "Kiwi",
         "store_logo_url": "https://kassal.app/logos/Kiwi.svg",
     },
     {
-        "category": "Laks",
         "product_name": "Laksefilet 400g",
         "current_price": 90.0,
         "reference_price": 150.0,
         "discount_pct": 40.0,
         "unit_price": 225.0,
+        "unit_price_unit": "kg",
         "image_url": "https://example.com/salmon.jpg",
         "store_name": "Meny",
         "store_logo_url": "https://kassal.app/logos/Meny.svg",
@@ -53,8 +53,8 @@ def test_save_and_get_roundtrip(db_path):
 
     assert updated_at == "2026-07-08T06:00:00+00:00"
     assert len(discounts) == 2
-    assert {d["category"] for d in discounts} == {"Kylling", "Laks"}
-    salmon = next(d for d in discounts if d["category"] == "Laks")
+    assert {d["product_name"] for d in discounts} == {"Kyllingfilet 500g", "Laksefilet 400g"}
+    salmon = next(d for d in discounts if d["product_name"] == "Laksefilet 400g")
     assert salmon["store_name"] == "Meny"
     assert salmon["discount_pct"] == 40.0
 
@@ -64,7 +64,7 @@ def test_save_snapshot_orders_by_discount_pct_descending(db_path):
 
     discounts, _ = get_latest_snapshot(db_path)
 
-    assert [d["category"] for d in discounts] == ["Laks", "Kylling"]
+    assert [d["product_name"] for d in discounts] == ["Laksefilet 400g", "Kyllingfilet 500g"]
 
 
 def test_save_snapshot_replaces_previous_scan_entirely(db_path):
@@ -75,7 +75,7 @@ def test_save_snapshot_replaces_previous_scan_entirely(db_path):
 
     assert updated_at == "2026-07-08T06:00:00+00:00"
     assert len(discounts) == 1
-    assert discounts[0]["category"] == "Kylling"
+    assert discounts[0]["product_name"] == "Kyllingfilet 500g"
 
 
 def test_save_snapshot_with_no_discounts_still_records_scan_time():
@@ -99,12 +99,12 @@ def test_save_and_get_roundtrip_preserves_none_discount_fields(db_path):
     0/0.0 by SQLite, and must not break the DESC ordering (a None discount_pct must
     sort after real ones, not crash or sort first)."""
     plain_item = {
-        "category": "Drikke",
         "product_name": "Cola 0,5l",
         "current_price": 20.0,
         "reference_price": None,
         "discount_pct": None,
         "unit_price": None,
+        "unit_price_unit": None,
         "image_url": None,
         "store_name": "Kiwi",
         "store_logo_url": None,

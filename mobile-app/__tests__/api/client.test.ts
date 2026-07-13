@@ -95,6 +95,40 @@ describe("getRecipesFromIngredients", () => {
     expect(body.max_results).toBeLessThanOrEqual(20); // MAX_INGREDIENT_COUNT
   });
 
+  it("defaults is_grocery_product to false when not specified", async () => {
+    mockFetchOnce({
+      ingredients: ["chicken"],
+      source: "corpus",
+      count: 1,
+      recipes: [{ title: "Chicken Rice", text: "...", rerank_score: 1, dense_score: 0.8 }],
+      generated: null,
+      error: null,
+    });
+
+    await getRecipesFromIngredients(["chicken"]);
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.is_grocery_product).toBe(false);
+  });
+
+  it("sends is_grocery_product: true when explicitly requested", async () => {
+    mockFetchOnce({
+      ingredients: ["COOP GRILL PERFEKT BOKEROKTE SOMMERKOTELETTER"],
+      source: "generated",
+      count: 1,
+      recipes: [{ title: "Grillkoteletter", text: "...", rerank_score: null, dense_score: null }],
+      generated: "...",
+      error: null,
+    });
+
+    await getRecipesFromIngredients(["COOP GRILL PERFEKT BOKEROKTE SOMMERKOTELETTER"], 1, true);
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.is_grocery_product).toBe(true);
+  });
+
   it("rejects an all-empty ingredients list before any network call", async () => {
     await expect(getRecipesFromIngredients(["", "  "])).rejects.toThrow(ValidationError);
     expect(global.fetch).not.toHaveBeenCalled();
@@ -115,7 +149,7 @@ describe("getDiscountedRecipes", () => {
     mockFetchOnce({
       discounted_ingredients: [
         {
-          category: "Ost", product_name: "Camembert", current_price: 68.9, reference_price: 129,
+          product_name: "Camembert", current_price: 68.9, reference_price: 129,
           discount_pct: 46.6, unit_price: null, image_url: null, store_name: "Coop", store_logo_url: null,
         },
       ],
@@ -161,10 +195,10 @@ describe("getDiscountedRecipes", () => {
       count: 0,
       recipes: [],
       generated: null,
-      error: "KASSALAPP_API_KEY not configured",
+      error: "discount cache not available",
     });
     const result = await getDiscountedRecipes();
-    expect(result.error).toBe("KASSALAPP_API_KEY not configured");
+    expect(result.error).toBe("discount cache not available");
   });
 });
 

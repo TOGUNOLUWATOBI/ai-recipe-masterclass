@@ -4,12 +4,12 @@ import { DealCard } from "../../src/components/DealCard";
 import type { DiscountedProduct } from "../../src/types/api";
 
 const DEAL: DiscountedProduct = {
-  category: "Ost",
   product_name: "Camembert Le Rustique 250g",
   current_price: 68.9,
   reference_price: 129,
   discount_pct: 46.6,
   unit_price: 27.56,
+  unit_price_unit: "kg",
   image_url: "https://example.com/cheese.jpg",
   store_name: "Coop",
   store_logo_url: "https://example.com/coop-logo.svg",
@@ -23,6 +23,13 @@ describe("DealCard", () => {
     expect(screen.getByText("68,90 kr")).toBeTruthy();
     expect(screen.getByText("129,00 kr")).toBeTruthy();
     expect(screen.getByText("-47%")).toBeTruthy();
+    expect(screen.getByText("27,56 kr/kg")).toBeTruthy();
+  });
+
+  it("falls back to the generic '/unit' label if unit_price_unit is unexpectedly null", async () => {
+    await render(<DealCard deal={{ ...DEAL, unit_price_unit: null }} onPress={() => {}} />);
+
+    expect(screen.getByText("27,56 kr/unit")).toBeTruthy();
   });
 
   it("shows a placeholder icon when there is no product image", async () => {

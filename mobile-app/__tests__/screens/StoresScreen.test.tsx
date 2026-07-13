@@ -20,12 +20,12 @@ const mockedGetDiscounted = getDiscountedRecipes as jest.MockedFunction<typeof g
 
 function makeDeal(overrides: Partial<DiscountedProduct> = {}): DiscountedProduct {
   return {
-    category: "Ost",
     product_name: "Camembert Le Rustique 250g",
     current_price: 68.9,
     reference_price: 129,
     discount_pct: 46.6,
     unit_price: null,
+    unit_price_unit: null,
     image_url: "https://example.com/cheese.jpg",
     store_name: "Coop",
     store_logo_url: "https://example.com/coop-logo.svg",
@@ -76,9 +76,9 @@ describe("StoresScreen", () => {
     expect(await screen.findByText("Coop")).toBeTruthy();
     expect(screen.getByText("Kiwi")).toBeTruthy();
     // Coop: 2 total items, only 1 of them actually discounted
-    expect(screen.getByText("2 varer · 1 på tilbud")).toBeTruthy();
+    expect(screen.getByText("2 items · 1 on sale")).toBeTruthy();
     // Kiwi: 1 item, discounted -- still called out
-    expect(screen.getByText("1 varer · 1 på tilbud")).toBeTruthy();
+    expect(screen.getByText("1 items · 1 on sale")).toBeTruthy();
     expect(screen.queryByText("Product A")).toBeNull();
     expect(screen.queryByText("Product C")).toBeNull();
   });
@@ -96,23 +96,23 @@ describe("StoresScreen", () => {
 
     await render(<StoresScreen />);
 
-    expect(await screen.findByText(/Ingen varer funnet/)).toBeTruthy();
+    expect(await screen.findByText(/No items found/)).toBeTruthy();
   });
 
-  it("shows the configuration error when KASSALAPP_API_KEY is not set", async () => {
+  it("shows a backend-reported error message", async () => {
     mockedGetDiscounted.mockResolvedValueOnce({
       discounted_ingredients: [],
       source: null,
       count: 0,
       recipes: [],
       generated: null,
-      error: "KASSALAPP_API_KEY not configured",
+      error: "discount cache not available",
       updated_at: null,
     });
 
     await render(<StoresScreen />);
 
-    expect(await screen.findByText("KASSALAPP_API_KEY not configured")).toBeTruthy();
+    expect(await screen.findByText("discount cache not available")).toBeTruthy();
   });
 
   it("shows an error banner when the request fails outright", async () => {

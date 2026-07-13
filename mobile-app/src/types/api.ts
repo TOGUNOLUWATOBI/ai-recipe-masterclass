@@ -48,7 +48,6 @@ export interface IngredientsResponse {
 }
 
 export interface DiscountedProduct {
-  category: string;
   product_name: string;
   current_price: number;
   // null when we don't have enough price history to compute a meaningful discount —
@@ -58,6 +57,10 @@ export interface DiscountedProduct {
   reference_price: number | null;
   discount_pct: number | null;
   unit_price: number | null;
+  // The quantity basis unit_price is expressed against -- 'kg', 'L', or 'pc' -- since it
+  // varies per product (see grocery_discounts.py's _compute_unit_price()). Null exactly
+  // when unit_price is null.
+  unit_price_unit: string | null;
   image_url: string | null;
   store_name: string | null;
   store_logo_url: string | null;

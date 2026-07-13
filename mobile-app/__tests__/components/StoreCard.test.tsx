@@ -7,13 +7,13 @@ describe("StoreCard", () => {
     await render(<StoreCard storeName="Coop" storeLogoUrl={null} itemCount={87} discountCount={0} onPress={() => {}} />);
 
     expect(screen.getByText("Coop")).toBeTruthy();
-    expect(screen.getByText("87 varer")).toBeTruthy();
+    expect(screen.getByText("87 items")).toBeTruthy();
   });
 
   it("calls out the discount count separately when some items are discounted", async () => {
     await render(<StoreCard storeName="Coop" storeLogoUrl={null} itemCount={87} discountCount={12} onPress={() => {}} />);
 
-    expect(screen.getByText("87 varer · 12 på tilbud")).toBeTruthy();
+    expect(screen.getByText("87 items · 12 on sale")).toBeTruthy();
   });
 
   it("shows a placeholder icon when there is no store logo", async () => {

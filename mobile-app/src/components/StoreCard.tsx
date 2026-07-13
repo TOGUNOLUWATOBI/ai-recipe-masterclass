@@ -11,9 +11,9 @@ interface StoreCardProps {
 
 export function StoreCard({ storeName, storeLogoUrl, itemCount, discountCount, onPress }: StoreCardProps) {
   // The store now lists its whole browsed catalog, not just confirmed discounts (see
-  // grocery_discounts.py) -- "X varer" (items) is the honest count; "Y på tilbud" is
+  // grocery_discounts.py) -- "X items" (items) is the honest count; "Y on sale" is
   // called out separately only when we actually found real discounts among them.
-  const subtitle = discountCount > 0 ? `${itemCount} varer · ${discountCount} på tilbud` : `${itemCount} varer`;
+  const subtitle = discountCount > 0 ? `${itemCount} items · ${discountCount} on sale` : `${itemCount} items`;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7} testID="store-card">

@@ -107,21 +107,19 @@ class RecipeRAGConfig:
     LLM_MAX_RETRIES: int = 3
     LLM_RETRY_DELAY: int = 5
 
-    # ===== GROCERY DISCOUNT SETTINGS (v2) =====
-    # Kassalapp (kassal.app) aggregates Norwegian grocery prices/discounts across major
-    # chains. No dedicated "on sale" endpoint exists — grocery_discounts.py computes
-    # discounts itself by comparing a product's current price against its recent price
-    # history. Get a key at kassal.app/profil/api (requires a free account).
-    KASSALAPP_API_KEY: str = os.getenv("KASSALAPP_API_KEY", "")
-    KASSALAPP_BASE_URL: str = "https://kassal.app/api/v1"
-    # A product currently priced this much below its recent average counts as "on sale" —
-    # unverified until we have a real key to calibrate against actual price-history data,
-    # treat as a starting point, not a tuned value.
-    DISCOUNT_THRESHOLD_PCT: float = 15.0
-    DISCOUNT_PRICE_HISTORY_DAYS: int = 30
-    # Cache the scheduled scan (refresh_discounts.py) writes to and /recipes/discounted
+    # Cache the scheduled scan (refresh_discounts.py) populates and /recipes/discounted
     # reads from — see discounts_store.py for why this is a real scan-once-serve-many
-    # cache rather than a live Kassalapp call per request.
+    # cache rather than a live Tjek call per request.
     DISCOUNTS_DB_PATH: str = os.getenv("DISCOUNTS_DB_PATH", str(RAG_DIR / "discounts_cache" / "discounts.db"))
+
+    # Minimum age (hours) the cached snapshot must reach before refresh_discounts.py will
+    # do another full Tjek sweep. Deliberately under the 24h normal cadence -- a healthy
+    # once-a-day cron still refreshes every time it fires, but this also lets a *more
+    # frequent* cron (e.g. hourly) act as a self-healing catch-up mechanism: standard cron
+    # doesn't retry a missed fixed-time firing (e.g. the host asleep/offline at 5am), so
+    # without this the cache could silently sit stale for days until a human noticed. With
+    # a stale-check gate + hourly cron, any wake-up within the window catches up
+    # automatically instead of waiting up to 24h for the next exact firing.
+    DISCOUNT_REFRESH_MIN_INTERVAL_HOURS: float = 20
 
     RANDOM_SEED: int = 42

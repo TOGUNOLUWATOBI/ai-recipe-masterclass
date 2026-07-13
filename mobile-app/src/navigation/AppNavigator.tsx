@@ -11,7 +11,7 @@ export function AppNavigator() {
   return (
     <NavigationContainer>
       <Tab.Navigator screenOptions={{ headerShown: false }}>
-        <Tab.Screen name="Tilbud" component={TilbudStackNavigator} />
+        <Tab.Screen name="Tilbud" component={TilbudStackNavigator} options={{ title: "Deals" }} />
         <Tab.Screen name="Ask" component={AskScreen} />
         <Tab.Screen name="Ingredients" component={IngredientsScreen} />
       </Tab.Navigator>

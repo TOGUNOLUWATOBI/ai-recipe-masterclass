@@ -5,13 +5,13 @@ import type { DiscountedProduct } from "../../src/types/api";
 
 const DEALS: DiscountedProduct[] = [
   {
-    category: "Ost", product_name: "Camembert Le Rustique 250g", current_price: 68.9,
-    reference_price: 129, discount_pct: 46.6, unit_price: null, image_url: null,
+    product_name: "Camembert Le Rustique 250g", current_price: 68.9,
+    reference_price: 129, discount_pct: 46.6, unit_price: null, unit_price_unit: null, image_url: null,
     store_name: "Coop", store_logo_url: null,
   },
   {
-    category: "Rømme", product_name: "Idun Rømmedressing 435g", current_price: 39.9,
-    reference_price: 52.05, discount_pct: 23.3, unit_price: null, image_url: null,
+    product_name: "Idun Rømmedressing 435g", current_price: 39.9,
+    reference_price: 52.05, discount_pct: 23.3, unit_price: null, unit_price_unit: null, image_url: null,
     store_name: "Coop", store_logo_url: null,
   },
 ];

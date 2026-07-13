@@ -16,7 +16,7 @@ export function TilbudStackNavigator() {
         component={StoreItemsScreen}
         options={({ route }) => ({ title: route.params.store.storeName })}
       />
-      <Stack.Screen name="DealDetail" component={DealDetailScreen} options={{ title: "Oppskrift" }} />
+      <Stack.Screen name="DealDetail" component={DealDetailScreen} options={{ title: "Recipe" }} />
     </Stack.Navigator>
   );
 }

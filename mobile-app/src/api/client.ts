@@ -58,13 +58,21 @@ export async function askQuestion(question: string): Promise<QueryResponse> {
 
 export async function getRecipesFromIngredients(
   ingredients: string[],
-  maxResults = 10
+  maxResults = 10,
+  isGroceryProduct: boolean = false
 ): Promise<IngredientsResponse> {
   const sanitized = sanitizeIngredients(ingredients);
   const cappedResults = Math.max(1, Math.min(maxResults, MAX_INGREDIENT_COUNT));
   const data = await fetchJson<IngredientsResponse>(
     "/recipes/from-ingredients",
-    { method: "POST", body: JSON.stringify({ ingredients: sanitized, max_results: cappedResults }) },
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ingredients: sanitized,
+        max_results: cappedResults,
+        is_grocery_product: isGroceryProduct,
+      }),
+    },
     DEFAULT_TIMEOUT_MS
   );
 
@@ -79,8 +87,8 @@ export async function getDiscountedRecipes(
   includeRecipes = true
 ): Promise<DiscountedResponse> {
   const cappedResults = Math.max(1, Math.min(maxResults, MAX_INGREDIENT_COUNT));
-  // The discount list itself now comes from a cache the backend refreshes on a daily
-  // cron job (not a live Kassalapp call per request), so this is fast regardless —
+  // The discount list itself comes from a cache the backend refreshes on a daily cron
+  // job (not a live API call per request), so this is fast regardless —
   // includeRecipes=false additionally skips the LLM generation pass for callers that
   // only need the browsable deal list right now (see StoresScreen).
   const data = await fetchJson<DiscountedResponse>(

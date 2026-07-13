@@ -1,9 +1,10 @@
 import type { RouteProp } from "@react-navigation/native";
 import { useRoute } from "@react-navigation/native";
-import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { getRecipesFromIngredients } from "../api/client";
 import { userMessageForError } from "../api/errors";
+import { MAX_INGREDIENT_COUNT } from "../api/validation";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { RecipeCard } from "../components/RecipeCard";
 import type { TilbudStackParamList } from "../navigation/types";
@@ -20,21 +21,35 @@ export function DealDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<IngredientsResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showMoreLoading, setShowMoreLoading] = useState(false);
+  const [canShowMore, setCanShowMore] = useState(false);
+  const [showMoreErrorMessage, setShowMoreErrorMessage] = useState<string | null>(null);
 
   // Recipe generation happens on demand for exactly the one product tapped, reusing the
   // already-tested /recipes/from-ingredients endpoint — cheaper and far faster than
   // generating recipes for every discounted item up front when only one gets viewed.
+  //
+  // The initial request only asks for 1 recipe: the backend's fallback-generation path
+  // is hard-capped at 3 sequential LLM calls no matter what max_results is requested, so
+  // asking for 1 up front turns a ~97s worst case into ~32s. Further recipes are fetched
+  // lazily via the "Show more" button below (see handleShowMore) — the response for a
+  // larger max_results is a prefix-stable superset of a smaller one, so it's always safe
+  // to replace `result` with the new response wholesale.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setErrorMessage(null);
-    getRecipesFromIngredients([deal.product_name], 5)
+    setResult(null);
+    setCanShowMore(false);
+    setShowMoreErrorMessage(null);
+    getRecipesFromIngredients([deal.product_name], 1, true)
       .then((response) => {
         if (cancelled) return;
         if (response.error) {
           setErrorMessage(response.error);
         } else {
           setResult(response);
+          setCanShowMore(response.recipes.length > 0 && response.recipes.length < MAX_INGREDIENT_COUNT);
         }
       })
       .catch((err) => {
@@ -47,6 +62,36 @@ export function DealDetailScreen() {
       cancelled = true;
     };
   }, [deal.product_name]);
+
+  // "Show more" re-requests the same product with a larger max_results, one more than
+  // what's currently shown. It never disturbs the already-rendered cards or the
+  // full-screen spinner — only the button itself reflects the in-flight request. The
+  // button hides itself once a request stops returning more recipes than before, which
+  // generically covers both real backend caps (the generated-fallback path hard-stops at
+  // 3 total; the corpus path stops whenever no further matches clear the relevance
+  // threshold) without hardcoding either number here.
+  const handleShowMore = useCallback(() => {
+    if (!result || showMoreLoading) return;
+    const previousCount = result.recipes.length;
+    const nextMax = Math.min(previousCount + 1, MAX_INGREDIENT_COUNT);
+    setShowMoreLoading(true);
+    setShowMoreErrorMessage(null);
+    getRecipesFromIngredients([deal.product_name], nextMax, true)
+      .then((response) => {
+        if (response.error) {
+          setShowMoreErrorMessage(response.error);
+          return;
+        }
+        setResult(response);
+        setCanShowMore(response.recipes.length > previousCount && nextMax < MAX_INGREDIENT_COUNT);
+      })
+      .catch((err) => {
+        setShowMoreErrorMessage(userMessageForError(err));
+      })
+      .finally(() => {
+        setShowMoreLoading(false);
+      });
+  }, [deal.product_name, result, showMoreLoading]);
 
   // The backend now returns every product per store, not just confirmed discounts --
   // reference_price/discount_pct are only present when a real, meaningful drop was
@@ -73,16 +118,35 @@ export function DealDetailScreen() {
         </View>
       </View>
 
-      <Text style={styles.recipesHeading}>Oppskrifter med {deal.category}</Text>
+      <Text style={styles.recipesHeading}>Recipes with {deal.product_name}</Text>
 
       {loading ? (
         <ActivityIndicator size="large" color="#e63946" style={styles.spinner} testID="deal-detail-loading" />
       ) : errorMessage ? (
         <ErrorBanner message={errorMessage} />
       ) : result && result.recipes.length > 0 ? (
-        result.recipes.map((recipe, index) => <RecipeCard key={index} title={recipe.title} text={recipe.text} />)
+        <>
+          {result.recipes.map((recipe, index) => (
+            <RecipeCard key={index} title={recipe.title} text={recipe.text} />
+          ))}
+          {canShowMore ? (
+            <TouchableOpacity
+              style={[styles.showMoreButton, showMoreLoading && styles.showMoreButtonDisabled]}
+              onPress={handleShowMore}
+              disabled={showMoreLoading}
+              testID="show-more-button"
+            >
+              {showMoreLoading ? (
+                <ActivityIndicator color="#e63946" testID="show-more-loading" />
+              ) : (
+                <Text style={styles.showMoreText}>Show more</Text>
+              )}
+            </TouchableOpacity>
+          ) : null}
+          {showMoreErrorMessage ? <ErrorBanner message={showMoreErrorMessage} /> : null}
+        </>
       ) : (
-        <Text style={styles.emptyText}>Fant ingen oppskrifter for denne varen.</Text>
+        <Text style={styles.emptyText}>No recipes found for this item.</Text>
       )}
     </ScrollView>
   );
@@ -111,4 +175,15 @@ const styles = StyleSheet.create({
   recipesHeading: { fontSize: 16, fontWeight: "700", marginBottom: 10, color: "#1a1a1a" },
   spinner: { marginTop: 20 },
   emptyText: { color: "#666", fontSize: 14, fontStyle: "italic" },
+  showMoreButton: {
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e63946",
+    padding: 12,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  showMoreButtonDisabled: { opacity: 0.6 },
+  showMoreText: { color: "#e63946", fontWeight: "600", fontSize: 15 },
 });

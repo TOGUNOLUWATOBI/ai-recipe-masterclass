@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { getRecipesFromIngredients } from "../api/client";
 import { userMessageForError } from "../api/errors";
+import { MAX_INGREDIENT_COUNT } from "../api/validation";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { RecipeCard } from "../components/RecipeCard";
 import type { IngredientsResponse } from "../types/api";
@@ -21,19 +22,31 @@ export function IngredientsScreen() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<IngredientsResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [searchIngredients, setSearchIngredients] = useState<string[] | null>(null);
+  const [showMoreLoading, setShowMoreLoading] = useState(false);
+  const [canShowMore, setCanShowMore] = useState(false);
+  const [showMoreErrorMessage, setShowMoreErrorMessage] = useState<string | null>(null);
 
+  // The first search only asks for 1 recipe: the backend's fallback-generation path is
+  // hard-capped at 3 sequential LLM calls no matter what max_results is requested, so
+  // requesting 1 up front turns a ~97s worst case into ~32s. The full-screen loading
+  // state on the "Find recipes" button is unchanged and only covers this first request.
   const handleSubmit = useCallback(async () => {
     if (loading) return;
     setLoading(true);
     setErrorMessage(null);
     setResult(null);
+    setCanShowMore(false);
+    setShowMoreErrorMessage(null);
+    const ingredients = ingredientsText.split(",");
+    setSearchIngredients(ingredients);
     try {
-      const ingredients = ingredientsText.split(",");
-      const response = await getRecipesFromIngredients(ingredients, 10);
+      const response = await getRecipesFromIngredients(ingredients, 1);
       if (response.error) {
         setErrorMessage(response.error);
       } else {
         setResult(response);
+        setCanShowMore(response.recipes.length > 0 && response.recipes.length < MAX_INGREDIENT_COUNT);
       }
     } catch (err) {
       setErrorMessage(userMessageForError(err));
@@ -41,6 +54,36 @@ export function IngredientsScreen() {
       setLoading(false);
     }
   }, [ingredientsText, loading]);
+
+  // "Show more" re-requests the same ingredients with a larger max_results, one more than
+  // what's currently shown. It never disturbs the already-rendered cards or the "Find
+  // recipes" button/spinner — only the show-more button itself reflects the in-flight
+  // request. The button hides itself once a request stops returning more recipes than
+  // before, which generically covers both real backend caps (the generated-fallback path
+  // hard-stops at 3 total; the corpus path stops whenever no further matches clear the
+  // relevance threshold) without hardcoding either number here.
+  const handleShowMore = useCallback(() => {
+    if (!result || !searchIngredients || showMoreLoading) return;
+    const previousCount = result.recipes.length;
+    const nextMax = Math.min(previousCount + 1, MAX_INGREDIENT_COUNT);
+    setShowMoreLoading(true);
+    setShowMoreErrorMessage(null);
+    getRecipesFromIngredients(searchIngredients, nextMax)
+      .then((response) => {
+        if (response.error) {
+          setShowMoreErrorMessage(response.error);
+          return;
+        }
+        setResult(response);
+        setCanShowMore(response.recipes.length > previousCount && nextMax < MAX_INGREDIENT_COUNT);
+      })
+      .catch((err) => {
+        setShowMoreErrorMessage(userMessageForError(err));
+      })
+      .finally(() => {
+        setShowMoreLoading(false);
+      });
+  }, [result, searchIngredients, showMoreLoading]);
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -78,6 +121,21 @@ export function IngredientsScreen() {
             {result.recipes.map((recipe, index) => (
               <RecipeCard key={index} title={recipe.title} text={recipe.text} />
             ))}
+            {canShowMore ? (
+              <TouchableOpacity
+                style={[styles.showMoreButton, showMoreLoading && styles.showMoreButtonDisabled]}
+                onPress={handleShowMore}
+                disabled={showMoreLoading}
+                testID="show-more-button"
+              >
+                {showMoreLoading ? (
+                  <ActivityIndicator color="#c0392b" testID="show-more-loading" />
+                ) : (
+                  <Text style={styles.showMoreText}>Show more</Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
+            {showMoreErrorMessage ? <ErrorBanner message={showMoreErrorMessage} /> : null}
           </View>
         ) : null}
       </ScrollView>
@@ -108,4 +166,15 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: "#fff", fontWeight: "600", fontSize: 16 },
   sourceNote: { marginTop: 16, marginBottom: 4, fontSize: 13, color: "#666", fontStyle: "italic" },
+  showMoreButton: {
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#c0392b",
+    padding: 12,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  showMoreButtonDisabled: { opacity: 0.6 },
+  showMoreText: { color: "#c0392b", fontWeight: "600", fontSize: 15 },
 });

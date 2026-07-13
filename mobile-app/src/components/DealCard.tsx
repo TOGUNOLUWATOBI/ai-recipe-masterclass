@@ -36,7 +36,11 @@ export function DealCard({ deal, onPress }: DealCardProps) {
       <Text style={styles.name} numberOfLines={2}>
         {deal.product_name}
       </Text>
-      {deal.unit_price != null ? <Text style={styles.unitPrice}>{formatNok(deal.unit_price)}/enhet</Text> : null}
+      {deal.unit_price != null ? (
+        <Text style={styles.unitPrice}>
+          {formatNok(deal.unit_price)}/{deal.unit_price_unit ?? "unit"}
+        </Text>
+      ) : null}
       <View style={styles.priceColumn}>
         <Text style={[styles.price, !hasDiscount && styles.priceNoDiscount]} numberOfLines={1}>
           {formatNok(deal.current_price)}
