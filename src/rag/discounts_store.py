@@ -19,6 +19,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS discounts (
     scanned_at TEXT NOT NULL,
     product_name TEXT,
+    category TEXT,
     current_price REAL,
     reference_price REAL,
     discount_pct REAL,
@@ -35,7 +36,7 @@ CREATE TABLE IF NOT EXISTS scan_meta (
 """
 
 _COLUMNS = [
-    "product_name", "current_price", "reference_price",
+    "product_name", "category", "current_price", "reference_price",
     "discount_pct", "unit_price", "unit_price_unit", "image_url", "store_name", "store_logo_url",
 ]
 
@@ -47,6 +48,13 @@ def _connect(db_path: str):
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        # CREATE TABLE IF NOT EXISTS above is a no-op against a discounts table that
+        # already existed pre-`category` (every deployed DB before this field was
+        # added) -- add the column by hand for those, since SQLite has no
+        # ADD COLUMN IF NOT EXISTS.
+        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(discounts)")}
+        if "category" not in existing_columns:
+            conn.execute("ALTER TABLE discounts ADD COLUMN category TEXT")
         yield conn
         conn.commit()
     finally:

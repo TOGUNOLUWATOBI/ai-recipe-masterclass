@@ -5,6 +5,7 @@ import type { DiscountedProduct } from "../../src/types/api";
 
 const DEAL: DiscountedProduct = {
   product_name: "Camembert Le Rustique 250g",
+  category: "main_food",
   current_price: 68.9,
   reference_price: 129,
   discount_pct: 46.6,

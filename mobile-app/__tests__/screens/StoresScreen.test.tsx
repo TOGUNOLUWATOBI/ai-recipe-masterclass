@@ -21,6 +21,7 @@ const mockedGetDiscounted = getDiscountedRecipes as jest.MockedFunction<typeof g
 function makeDeal(overrides: Partial<DiscountedProduct> = {}): DiscountedProduct {
   return {
     product_name: "Camembert Le Rustique 250g",
+    category: "main_food",
     current_price: 68.9,
     reference_price: 129,
     discount_pct: 46.6,
@@ -121,6 +122,79 @@ describe("StoresScreen", () => {
     await render(<StoresScreen />);
 
     expect(await screen.findByTestId("error-banner")).toBeTruthy();
+  });
+
+  it("defaults to the Food tab, showing main_food and snack but not non_food items", async () => {
+    mockedGetDiscounted.mockResolvedValueOnce({
+      discounted_ingredients: [
+        makeDeal({
+          store_name: "Coop", product_name: "Kyllingfilet", category: "main_food",
+          discount_pct: null, reference_price: null,
+        }),
+        makeDeal({
+          store_name: "Coop", product_name: "Melkesjokolade", category: "snack",
+          discount_pct: null, reference_price: null,
+        }),
+        makeDeal({
+          store_name: "Kiwi", product_name: "Toalettpapir", category: "non_food",
+          discount_pct: null, reference_price: null,
+        }),
+      ],
+      source: null,
+      count: 0,
+      recipes: [],
+      generated: null,
+      error: null,
+      updated_at: null,
+    });
+
+    await render(<StoresScreen />);
+
+    // Coop groups its two food items (main_food + snack); Kiwi's only item is non_food
+    // and shouldn't count toward the Food tab at all.
+    expect(await screen.findByText("Coop")).toBeTruthy();
+    expect(screen.queryByText("Kiwi")).toBeNull();
+    expect(screen.getByText("2 items")).toBeTruthy();
+  });
+
+  it("switches to the Non-food tab and shows only non_food items", async () => {
+    mockedGetDiscounted.mockResolvedValueOnce({
+      discounted_ingredients: [
+        makeDeal({ store_name: "Coop", product_name: "Kyllingfilet", category: "main_food" }),
+        makeDeal({ store_name: "Kiwi", product_name: "Toalettpapir", category: "non_food" }),
+      ],
+      source: null,
+      count: 0,
+      recipes: [],
+      generated: null,
+      error: null,
+      updated_at: null,
+    });
+
+    const user = userEvent.setup();
+    await render(<StoresScreen />);
+    await screen.findByTestId("non-food-tab-button");
+    await user.press(screen.getByTestId("non-food-tab-button"));
+
+    expect(await screen.findByText("Kiwi")).toBeTruthy();
+    expect(screen.queryByText("Coop")).toBeNull();
+  });
+
+  it("treats a missing category as a food item, not non-food", async () => {
+    const { category: _category, ...dealWithoutCategory } = makeDeal({ store_name: "Coop" });
+    mockedGetDiscounted.mockResolvedValueOnce({
+      discounted_ingredients: [dealWithoutCategory as DiscountedProduct],
+      source: null,
+      count: 0,
+      recipes: [],
+      generated: null,
+      error: null,
+      updated_at: null,
+    });
+
+    await render(<StoresScreen />);
+
+    expect(await screen.findByText("Coop")).toBeTruthy();
   });
 
   it("navigates to StoreItems with the tapped store's full deal group", async () => {

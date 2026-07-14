@@ -47,8 +47,16 @@ export interface IngredientsResponse {
   error: string | null;
 }
 
+// Coarse label from grocery_discounts.classify_product() -- "non_food" items (soap,
+// batteries, ...) and "snack" items (candy, chips, soda, ...) are still returned
+// alongside "main_food", just excluded from the ingredient list the backend feeds into
+// recipe generation. Optional/nullable so older cached rows (pre-category) don't break
+// callers that don't care about it.
+export type DiscountedProductCategory = "main_food" | "snack" | "non_food";
+
 export interface DiscountedProduct {
   product_name: string;
+  category: DiscountedProductCategory | null;
   current_price: number;
   // null when we don't have enough price history to compute a meaningful discount —
   // the backend now returns every product per store, not just confirmed discounts, so

@@ -132,19 +132,38 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True):
         }
 
     # Uses the real discovered product_name (Norwegian, as returned directly by Tjek's
-    # own flyer heading), not any category label — confirmed live that the fine-tuned
-    # model handles this well: "Kjøttdeig Storfe 14%..." correctly became a
-    # "Kjøttballer" (meatballs) recipe. Since the real flyer product name is shown to
-    # the user either way, there's no deception even on an unusual heading; the source
-    # data itself is a real, officially-published offer, not an inferred or fuzzy match.
+    # own flyer heading) as the query text — confirmed live that the fine-tuned model
+    # handles this well: "Kjøttdeig Storfe 14%..." correctly became a "Kjøttballer"
+    # (meatballs) recipe. Since the real flyer product name is shown to the user either
+    # way, there's no deception even on an unusual heading; the source data itself is a
+    # real, officially-published offer, not an inferred or fuzzy match.
     #
-    # Capped at 30 — the discount scan now returns every product per store (up to ~1400
-    # across all stores), not just discounted ones, and joining all of that into one
-    # retrieval query (find_recipes_from_ingredients joins the whole list into a single
-    # comma-separated string) would dilute the query into noise rather than actually
-    # cost more. discounts is already sorted with confirmed discounts first, so this
-    # naturally keeps the real deals.
-    product_names = [d["product_name"] for d in discounts[:30]]
+    # Only "main_food" items go into the recipe query — "non_food" (soap, batteries,
+    # ...) and "snack" (chips, candy, soda, ...) items are still returned in
+    # discounted_ingredients below for the app's own tabs/menus, but neither makes for
+    # a sensible recipe ingredient (see grocery_discounts.classify_product()).
+    # `d.get("category") or "main_food"`, not `d.get("category", "main_food")` — every
+    # row from get_latest_snapshot() already has a "category" key (it's one of
+    # discounts_store._COLUMNS), just with value None for rows written before this
+    # column existed or before the next scan overwrites them, so a plain .get(...,
+    # default) would never actually apply the default (the key is never *missing*,
+    # only sometimes None) and would wrongly treat every un-migrated row as excluded.
+    #
+    # Capped at 30 after that filter — the discount scan now returns every product per
+    # store (up to ~1400 across all stores), not just discounted ones, and joining all
+    # of that into one retrieval query (find_recipes_from_ingredients joins the whole
+    # list into a single comma-separated string) would dilute the query into noise
+    # rather than actually cost more. discounts is already sorted with confirmed
+    # discounts first, so this naturally keeps the real deals.
+    main_food = [d for d in discounts if (d.get("category") or "main_food") == "main_food"]
+    product_names = [d["product_name"] for d in main_food[:30]]
+
+    if not product_names:
+        return {
+            "discounted_ingredients": discounts, "source": None, "count": 0, "recipes": [],
+            "generated": None, "error": None, "updated_at": updated_at,
+        }
+
     # Always normalize=True here, unconditionally, with no request-side flag needed --
     # unlike /recipes/from-ingredients, this list is always sourced from the real Tjek
     # discounts snapshot (see get_latest_snapshot() above), never arbitrary user input.

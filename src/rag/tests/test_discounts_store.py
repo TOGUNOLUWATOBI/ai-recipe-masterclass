@@ -11,6 +11,7 @@ from rag.discounts_store import get_latest_snapshot, save_snapshot
 _SAMPLE = [
     {
         "product_name": "Kyllingfilet 500g",
+        "category": "main_food",
         "current_price": 80.0,
         "reference_price": 100.0,
         "discount_pct": 20.0,
@@ -22,6 +23,7 @@ _SAMPLE = [
     },
     {
         "product_name": "Laksefilet 400g",
+        "category": "main_food",
         "current_price": 90.0,
         "reference_price": 150.0,
         "discount_pct": 40.0,
@@ -57,6 +59,7 @@ def test_save_and_get_roundtrip(db_path):
     salmon = next(d for d in discounts if d["product_name"] == "Laksefilet 400g")
     assert salmon["store_name"] == "Meny"
     assert salmon["discount_pct"] == 40.0
+    assert salmon["category"] == "main_food"
 
 
 def test_save_snapshot_orders_by_discount_pct_descending(db_path):
@@ -127,3 +130,37 @@ def test_get_latest_snapshot_creates_parent_directory_if_missing(db_path):
     get_latest_snapshot(db_path)
 
     assert Path(db_path).parent.exists()
+
+
+def test_save_snapshot_migrates_a_pre_category_database(db_path):
+    """Every deployed DB predates the `category` column -- simulate one (table created
+    without it, like a real pre-migration file) and confirm a save/read cycle against it
+    adds the column instead of crashing with "no such column"."""
+    import sqlite3
+
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE discounts (
+            scanned_at TEXT NOT NULL,
+            product_name TEXT,
+            current_price REAL,
+            reference_price REAL,
+            discount_pct REAL,
+            unit_price REAL,
+            unit_price_unit TEXT,
+            image_url TEXT,
+            store_name TEXT,
+            store_logo_url TEXT
+        )
+    """)
+    conn.execute("CREATE TABLE scan_meta (id INTEGER PRIMARY KEY CHECK (id = 0), last_scanned_at TEXT NOT NULL)")
+    conn.commit()
+    conn.close()
+
+    save_snapshot(db_path, _SAMPLE, scanned_at="2026-07-15T06:00:00+00:00")
+    discounts, updated_at = get_latest_snapshot(db_path)
+
+    assert updated_at == "2026-07-15T06:00:00+00:00"
+    salmon = next(d for d in discounts if d["product_name"] == "Laksefilet 400g")
+    assert salmon["category"] == "main_food"
