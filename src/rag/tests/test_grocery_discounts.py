@@ -224,6 +224,16 @@ def test_is_snack_detects_brand_only_candy_and_iced_tea():
     assert _is_snack("COOP ISTE") is True
 
 
+def test_is_snack_detects_kvikk_lunsj():
+    """User-reported miss: "Kvikk Lunsj" (a chocolate-covered wafer bar) is a two-word
+    brand name with no generic candy word in the heading at all -- caught via "kvikk"
+    since that's the distinctive, collision-free half of the name ("lunsj" alone means
+    "lunch" and is too generic/risky to key on)."""
+    assert _is_snack("Kvikk Lunsj") is True
+    assert _is_snack("KVIKK LUNSJ 6PK") is True
+    assert _is_snack("KVIKK LUNSJ 3-PK") is True
+
+
 def test_is_snack_does_not_false_positive_on_rice():
     """Regression guard: "is" (ice) must never be a bare keyword -- it would wrongly
     match "ris" (rice) and any other ordinary food word ending in those two letters."""

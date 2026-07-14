@@ -146,8 +146,9 @@ NON_FOOD_KEYWORDS = [
 # note above). Generic Norwegian snack/candy/soda words held up well with no false
 # positives found, but several real candy headings carry ONLY a manufacturer brand
 # name with no generic word at all (e.g. "SMARTIES HEXATUBE", "NIDAR POSER", "CLOETTA
-# POPS ORIGINAL") -- those brands are added directly since there's no generic term to
-# key on instead.
+# POPS ORIGINAL", "Kvikk Lunsj" -- a chocolate-covered wafer bar, Norway's best-known
+# candy brand alongside Freia) -- those brands are added directly since there's no
+# generic term to key on instead.
 SNACK_KEYWORDS = [
     "chips", "potetgull", "nachos",
     "sjokolade",
@@ -157,7 +158,7 @@ SNACK_KEYWORDS = [
     "kjeks",
     "snacks",
     "popcorn",
-    "smarties", "nidar", "brynild", "cloetta", "squashies",
+    "smarties", "nidar", "brynild", "cloetta", "squashies", "kvikk",
 ]
 
 
