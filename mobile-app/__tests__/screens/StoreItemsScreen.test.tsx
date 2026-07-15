@@ -19,18 +19,20 @@ const DEALS: DiscountedProduct[] = [
 const mockStore = { storeName: "Coop", storeLogoUrl: null, deals: DEALS };
 
 const mockNavigate = jest.fn();
+const mockUseRoute = jest.fn(() => ({ params: { store: mockStore } }));
 jest.mock("@react-navigation/native", () => {
   const actual = jest.requireActual("@react-navigation/native");
   return {
     ...actual,
     useNavigation: () => ({ navigate: mockNavigate }),
-    useRoute: () => ({ params: { store: mockStore } }),
+    useRoute: () => mockUseRoute(),
   };
 });
 
 describe("StoreItemsScreen", () => {
   beforeEach(() => {
     mockNavigate.mockReset();
+    mockUseRoute.mockReturnValue({ params: { store: mockStore } });
   });
 
   it("renders a deal card for every item in the store's group", async () => {
@@ -48,5 +50,37 @@ describe("StoreItemsScreen", () => {
     await user.press(cards[0]);
 
     expect(mockNavigate).toHaveBeenCalledWith("DealDetail", { deal: DEALS[0] });
+  });
+
+  it("does not show a section header when every item in the store is the same category", async () => {
+    await render(<StoreItemsScreen />);
+
+    expect(screen.queryByText("Food")).toBeNull();
+    expect(screen.queryByText("Snacks")).toBeNull();
+  });
+});
+
+describe("StoreItemsScreen with mixed categories", () => {
+  const mixedStore = {
+    storeName: "Coop",
+    storeLogoUrl: null,
+    deals: [
+      { ...DEALS[0], product_name: "Kyllingfilet", category: "main_food" as const },
+      { ...DEALS[0], product_name: "Freia Melkesjokolade", category: "snack" as const },
+    ],
+  };
+
+  beforeEach(() => {
+    mockNavigate.mockReset();
+    mockUseRoute.mockReturnValue({ params: { store: mixedStore } });
+  });
+
+  it("splits a store's items into Food and Snacks sections", async () => {
+    await render(<StoreItemsScreen />);
+
+    expect(await screen.findByText("Food")).toBeTruthy();
+    expect(screen.getByText("Snacks")).toBeTruthy();
+    expect(screen.getByText("Kyllingfilet")).toBeTruthy();
+    expect(screen.getByText("Freia Melkesjokolade")).toBeTruthy();
   });
 });
