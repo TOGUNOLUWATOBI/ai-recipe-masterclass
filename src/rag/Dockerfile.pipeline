@@ -14,6 +14,7 @@ COPY rag/generator.py ./rag/generator.py
 COPY rag/grocery_discounts.py ./rag/grocery_discounts.py
 COPY rag/grocery_terms.py ./rag/grocery_terms.py
 COPY rag/pipeline.py ./rag/pipeline.py
+COPY rag/product_classifier.py ./rag/product_classifier.py
 COPY rag/refresh_discounts.py ./rag/refresh_discounts.py
 COPY rag/retrieval_client.py ./rag/retrieval_client.py
 COPY rag/pipeline_server.py ./rag/pipeline_server.py
