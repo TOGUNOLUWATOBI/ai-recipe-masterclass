@@ -14,12 +14,21 @@ from rag import refresh_discounts
 
 
 class _FakeConfig:
-    """Stand-in for RecipeRAGConfig with just the two fields main() reads, so tests can
-    fix DISCOUNT_REFRESH_MIN_INTERVAL_HOURS without depending on its real default."""
+    """Stand-in for RecipeRAGConfig with just the fields main() reads, so tests can
+    fix DISCOUNT_REFRESH_MIN_INTERVAL_HOURS without depending on its real default.
+    CATEGORY_LLM_MODEL/OLLAMA_*/LLM_API_STYLE are only ever read inside the
+    `if uncached_names:` branch, which _patch_classification's mocked
+    get_cached_categories (returns {}, so nothing is ever "already cached") combined
+    with a mocked RecipeGenerator keeps from making any real call -- present here only
+    so that branch doesn't AttributeError before reaching the mocks."""
 
     def __init__(self, min_interval_hours=20):
         self.DISCOUNTS_DB_PATH = "unused-in-tests.db"
         self.DISCOUNT_REFRESH_MIN_INTERVAL_HOURS = min_interval_hours
+        self.CATEGORY_LLM_MODEL = "qwen3:8b"
+        self.OLLAMA_BASE_URL = "http://ollama:11434"
+        self.OLLAMA_API_KEY = ""
+        self.LLM_API_STYLE = "ollama"
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +41,19 @@ def _patch_tjek_client(monkeypatch):
     # TjekClient() must never actually be constructed/hit the network in these tests --
     # find_discounted_products is mocked directly regardless of what it's called with.
     monkeypatch.setattr(refresh_discounts, "TjekClient", MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def _patch_classification(monkeypatch):
+    # The LLM classification step (product_classifier.py) is a separate concern from
+    # the staleness gate this file otherwise tests -- default it to a no-op (nothing
+    # cached, nothing newly classified) so these tests never construct a real
+    # RecipeGenerator or hit a real network. test_refresh_discounts_classification.py
+    # overrides these to test the integration itself.
+    monkeypatch.setattr(refresh_discounts, "get_cached_categories", MagicMock(return_value={}))
+    monkeypatch.setattr(refresh_discounts, "save_categories", MagicMock())
+    monkeypatch.setattr(refresh_discounts, "RecipeGenerator", MagicMock())
+    monkeypatch.setattr(refresh_discounts, "classify_new_products", MagicMock(return_value={}))
 
 
 def _iso(age: timedelta) -> str:

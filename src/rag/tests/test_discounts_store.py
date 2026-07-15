@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rag.discounts_store import get_latest_snapshot, save_snapshot
+from rag.discounts_store import get_cached_categories, get_latest_snapshot, save_categories, save_snapshot
 
 _SAMPLE = [
     {
@@ -130,6 +130,52 @@ def test_get_latest_snapshot_creates_parent_directory_if_missing(db_path):
     get_latest_snapshot(db_path)
 
     assert Path(db_path).parent.exists()
+
+
+def test_get_cached_categories_returns_empty_dict_before_anything_cached(db_path):
+    assert get_cached_categories(db_path, ["Kyllingfilet 500g"]) == {}
+
+
+def test_save_and_get_cached_categories_roundtrip(db_path):
+    save_categories(db_path, {"Kyllingfilet 500g": "main_food", "Kvikk Lunsj": "snack"})
+
+    result = get_cached_categories(db_path, ["Kyllingfilet 500g", "Kvikk Lunsj", "Never Seen"])
+
+    assert result == {"Kyllingfilet 500g": "main_food", "Kvikk Lunsj": "snack"}
+    assert "Never Seen" not in result
+
+
+def test_save_categories_upserts_an_existing_product_name(db_path):
+    """A product reclassified later (e.g. keyword list improved) must overwrite the
+    old cached value, not duplicate or ignore it."""
+    save_categories(db_path, {"Kvikk Lunsj": "main_food"})
+    save_categories(db_path, {"Kvikk Lunsj": "snack"})
+
+    assert get_cached_categories(db_path, ["Kvikk Lunsj"]) == {"Kvikk Lunsj": "snack"}
+
+
+def test_save_categories_does_not_disturb_previously_cached_entries(db_path):
+    """product_categories accumulates indefinitely across refreshes (unlike
+    `discounts`, which save_snapshot() replaces wholesale each scan) -- a later save
+    for a different product must not wipe out earlier ones."""
+    save_categories(db_path, {"Kyllingfilet 500g": "main_food"})
+    save_categories(db_path, {"Kvikk Lunsj": "snack"})
+
+    result = get_cached_categories(db_path, ["Kyllingfilet 500g", "Kvikk Lunsj"])
+
+    assert result == {"Kyllingfilet 500g": "main_food", "Kvikk Lunsj": "snack"}
+
+
+def test_save_categories_is_a_noop_for_an_empty_dict(db_path):
+    save_categories(db_path, {})
+
+    assert get_cached_categories(db_path, ["Kyllingfilet 500g"]) == {}
+
+
+def test_get_cached_categories_is_a_noop_for_an_empty_name_list(db_path):
+    save_categories(db_path, {"Kyllingfilet 500g": "main_food"})
+
+    assert get_cached_categories(db_path, []) == {}
 
 
 def test_save_snapshot_migrates_a_pre_category_database(db_path):

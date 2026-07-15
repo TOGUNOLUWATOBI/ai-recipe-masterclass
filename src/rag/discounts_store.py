@@ -8,6 +8,12 @@ ever reads the latest snapshot here.
 Deliberately a plain relational table, not a JSON blob: every discounted-ingredient
 record already shares the same fixed set of fields (see grocery_discounts.py), so there's
 no schema flexibility to buy by giving that up.
+
+Also holds `product_categories`, a *separate*, never-wiped table (unlike `discounts`,
+which save_snapshot() replaces wholesale every scan) — a permanent product_name ->
+category cache so a product classified once (via the LLM classifier in
+product_classifier.py, see refresh_discounts.py) is never re-sent to the LLM again,
+even after it drops out of one scan and reappears in a later one.
 """
 
 import sqlite3
@@ -32,6 +38,10 @@ CREATE TABLE IF NOT EXISTS discounts (
 CREATE TABLE IF NOT EXISTS scan_meta (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     last_scanned_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS product_categories (
+    product_name TEXT PRIMARY KEY,
+    category TEXT NOT NULL
 );
 """
 
@@ -92,3 +102,33 @@ def get_latest_snapshot(db_path: str) -> Tuple[List[Dict[str, Any]], Optional[st
 
     discounts = [{c: row[c] for c in _COLUMNS} for row in rows]
     return discounts, meta["last_scanned_at"]
+
+
+def get_cached_categories(db_path: str, product_names: List[str]) -> Dict[str, str]:
+    """Returns whichever of the given product names already have a cached category --
+    a name absent from the returned dict has never been classified before (by the LLM
+    classifier or otherwise) and needs a fresh classification."""
+    if not product_names:
+        return {}
+    with _connect(db_path) as conn:
+        placeholders = ", ".join("?" for _ in product_names)
+        rows = conn.execute(
+            f"SELECT product_name, category FROM product_categories WHERE product_name IN ({placeholders})",
+            product_names,
+        ).fetchall()
+    return {row["product_name"]: row["category"] for row in rows}
+
+
+def save_categories(db_path: str, categories: Dict[str, str]) -> None:
+    """Upserts newly-classified product_name -> category pairs. Never deletes existing
+    entries -- this table accumulates indefinitely, unlike `discounts` (see module
+    docstring), so a product already classified is never reclassified even if it
+    temporarily drops out of the current scan."""
+    if not categories:
+        return
+    with _connect(db_path) as conn:
+        conn.executemany(
+            """INSERT INTO product_categories (product_name, category) VALUES (?, ?)
+               ON CONFLICT(product_name) DO UPDATE SET category = excluded.category""",
+            list(categories.items()),
+        )

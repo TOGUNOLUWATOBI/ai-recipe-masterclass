@@ -107,6 +107,15 @@ class RecipeRAGConfig:
     LLM_MAX_RETRIES: int = 3
     LLM_RETRY_DELAY: int = 5
 
+    # Separate model for grocery-item classification (see product_classifier.py) --
+    # deliberately NOT LLM_MODEL (toriko3, fine-tuned specifically for recipe
+    # generation/QA) since a recipe-fine-tuned model is a poor fit for a generic
+    # structured-classification task. qwen3:8b with think=False (see
+    # product_classifier.py) was confirmed live to classify real flyer headings
+    # correctly, including several the keyword heuristic in grocery_discounts.py
+    # missed (e.g. "SØRLANDSIS", "FACE CONTROL CREAM", "KRONE-IS").
+    CATEGORY_LLM_MODEL: str = os.getenv("CATEGORY_LLM_MODEL", "qwen3:8b")
+
     # Cache the scheduled scan (refresh_discounts.py) populates and /recipes/discounted
     # reads from — see discounts_store.py for why this is a real scan-once-serve-many
     # cache rather than a live Tjek call per request.
