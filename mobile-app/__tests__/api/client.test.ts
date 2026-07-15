@@ -30,7 +30,24 @@ describe("askQuestion", () => {
 
     expect(result.answer).toBe("### Jollof Rice");
     const [, options] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(JSON.parse(options.body)).toEqual({ question: "jollof rice" });
+    expect(JSON.parse(options.body)).toEqual({ question: "jollof rice", language: "en" });
+  });
+
+  it("sends the selected language", async () => {
+    mockFetchOnce({
+      question: "hva kan jeg lage med kylling?",
+      retrieved: [],
+      grounded: [],
+      context: "...",
+      answer: "### Kylling og ris",
+      error: null,
+      elapsed: 1.2,
+    });
+
+    await askQuestion("hva kan jeg lage med kylling?", "no");
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body).language).toBe("no");
   });
 
   it("rejects an empty question before making any network call", async () => {
@@ -129,6 +146,26 @@ describe("getRecipesFromIngredients", () => {
     expect(body.is_grocery_product).toBe(true);
   });
 
+  it("sends the selected language, defaulting to English", async () => {
+    mockFetchOnce({
+      ingredients: ["chicken"], source: "corpus", count: 1,
+      recipes: [{ title: "Chicken Rice", text: "...", rerank_score: 1, dense_score: 0.8 }],
+      generated: null, error: null,
+    });
+    await getRecipesFromIngredients(["chicken"]);
+    let body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.language).toBe("en");
+
+    mockFetchOnce({
+      ingredients: ["kylling"], source: "corpus", count: 1,
+      recipes: [{ title: "Kylling og ris", text: "...", rerank_score: 1, dense_score: 0.8 }],
+      generated: null, error: null,
+    });
+    await getRecipesFromIngredients(["kylling"], 10, false, "no");
+    body = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+    expect(body.language).toBe("no");
+  });
+
   it("rejects an all-empty ingredients list before any network call", async () => {
     await expect(getRecipesFromIngredients(["", "  "])).rejects.toThrow(ValidationError);
     expect(global.fetch).not.toHaveBeenCalled();
@@ -181,6 +218,22 @@ describe("getDiscountedRecipes", () => {
     await getDiscountedRecipes(5, false);
     [url] = (global.fetch as jest.Mock).mock.calls[1];
     expect(url).toContain("include_recipes=false");
+  });
+
+  it("defaults to language=en, and passes the selected language when given", async () => {
+    mockFetchOnce({
+      discounted_ingredients: [], source: null, count: 0, recipes: [], generated: null, error: null, updated_at: null,
+    });
+    await getDiscountedRecipes(5);
+    let [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toContain("language=en");
+
+    mockFetchOnce({
+      discounted_ingredients: [], source: null, count: 0, recipes: [], generated: null, error: null, updated_at: null,
+    });
+    await getDiscountedRecipes(5, true, "no");
+    [url] = (global.fetch as jest.Mock).mock.calls[1];
+    expect(url).toContain("language=no");
   });
 
   it("throws ApiError('invalid_response', ...) when discounted_ingredients is missing", async () => {

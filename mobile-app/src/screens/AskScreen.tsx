@@ -22,7 +22,7 @@ import { MAX_QUESTION_LENGTH } from "../api/validation";
 
 export function AskScreen() {
   const insets = useSafeAreaInsets();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<QueryResponse | null>(null);
@@ -34,7 +34,7 @@ export function AskScreen() {
     setErrorMessage(null);
     setResult(null);
     try {
-      const response = await askQuestion(question);
+      const response = await askQuestion(question, language);
       if (response.error) {
         setErrorMessage(response.error);
       } else {
@@ -45,7 +45,7 @@ export function AskScreen() {
     } finally {
       setLoading(false);
     }
-  }, [question, loading]);
+  }, [question, loading, language]);
 
   const groundedTitles = result?.grounded
     .map((r) => r.payload.title)

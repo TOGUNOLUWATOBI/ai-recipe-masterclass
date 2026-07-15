@@ -17,7 +17,7 @@ function formatNok(value: number): string {
 
 export function DealDetailScreen() {
   const route = useRoute<RouteProp<TilbudStackParamList, "DealDetail">>();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const { deal } = route.params;
 
   const [loading, setLoading] = useState(true);
@@ -44,7 +44,7 @@ export function DealDetailScreen() {
     setResult(null);
     setCanShowMore(false);
     setShowMoreErrorMessage(null);
-    getRecipesFromIngredients([deal.product_name], 1, true)
+    getRecipesFromIngredients([deal.product_name], 1, true, language)
       .then((response) => {
         if (cancelled) return;
         if (response.error) {
@@ -63,7 +63,7 @@ export function DealDetailScreen() {
     return () => {
       cancelled = true;
     };
-  }, [deal.product_name]);
+  }, [deal.product_name, language]);
 
   // "Show more" re-requests the same product with a larger max_results, one more than
   // what's currently shown. It never disturbs the already-rendered cards or the
@@ -78,7 +78,7 @@ export function DealDetailScreen() {
     const nextMax = Math.min(previousCount + 1, MAX_INGREDIENT_COUNT);
     setShowMoreLoading(true);
     setShowMoreErrorMessage(null);
-    getRecipesFromIngredients([deal.product_name], nextMax, true)
+    getRecipesFromIngredients([deal.product_name], nextMax, true, language)
       .then((response) => {
         if (response.error) {
           setShowMoreErrorMessage(response.error);
@@ -93,7 +93,7 @@ export function DealDetailScreen() {
       .finally(() => {
         setShowMoreLoading(false);
       });
-  }, [deal.product_name, result, showMoreLoading]);
+  }, [deal.product_name, result, showMoreLoading, language]);
 
   // The backend now returns every product per store, not just confirmed discounts --
   // reference_price/discount_pct are only present when a real, meaningful drop was

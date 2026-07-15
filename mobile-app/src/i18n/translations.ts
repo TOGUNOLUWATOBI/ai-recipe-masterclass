@@ -1,11 +1,12 @@
 /**
- * UI-text-only translations (EN/NO) -- backend-generated content (recipes, Ask
- * answers) is never translated here and stays English regardless of the selected
- * language. See project notes: the fine-tuned recipe model ignores a Norwegian
- * instruction entirely, and the general-purpose model that does follow it fabricates
- * incorrect Norwegian food vocabulary even when translating a verified real recipe --
- * neither is reliable enough to ship, so this toggle only ever affects the app's own
- * chrome (buttons, headers, labels, validation/error messages).
+ * UI text translations (EN/NO). Recipe/Ask content itself is translated server-side
+ * (see src/rag/translator.py -- a dedicated NMT model, not an LLM: the fine-tuned
+ * recipe model ignores a Norwegian instruction outright, and a general-purpose chat
+ * model fabricates incorrect Norwegian vocabulary even translating a verified real
+ * recipe) -- the backend just returns already-Norwegian text when language="no" is
+ * requested, so this file only needs to cover the app's OWN chrome (buttons, headers,
+ * labels, validation/error messages) plus the two RecipeCard section labels below,
+ * which the backend's translated text doesn't include (see parseRecipeText.ts).
  */
 import type { Language } from "./language";
 
@@ -42,6 +43,9 @@ export const translations = {
 
     dealDetailRecipesWith: (productName: string) => `Recipes with ${productName}`,
     dealDetailEmpty: "No recipes found for this item.",
+
+    recipeIngredientsLabel: "Ingredients",
+    recipeInstructionsLabel: "Instructions",
 
     errorNetwork: "Can't reach the server. Check your internet connection and try again.",
     errorTimeout: "That took too long to respond. Please try again.",
@@ -88,6 +92,9 @@ export const translations = {
 
     dealDetailRecipesWith: (productName: string) => `Oppskrifter med ${productName}`,
     dealDetailEmpty: "Ingen oppskrifter funnet for denne varen.",
+
+    recipeIngredientsLabel: "Ingredienser",
+    recipeInstructionsLabel: "Instruksjoner",
 
     errorNetwork: "Får ikke kontakt med serveren. Sjekk internettforbindelsen og prøv igjen.",
     errorTimeout: "Det tok for lang tid å svare. Prøv igjen.",

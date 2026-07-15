@@ -1,5 +1,6 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
+import { useLanguage } from "../i18n/LanguageContext";
 import { parseRecipeText } from "../utils/parseRecipeText";
 
 interface RecipeCardProps {
@@ -9,6 +10,7 @@ interface RecipeCardProps {
 }
 
 export function RecipeCard({ title, text, meta }: RecipeCardProps) {
+  const { t } = useLanguage();
   const parsed = parseRecipeText(text);
   const displayTitle = title || parsed.title || "Recipe";
   const hasStructuredContent = Boolean(parsed.ingredients || parsed.instructions);
@@ -22,13 +24,13 @@ export function RecipeCard({ title, text, meta }: RecipeCardProps) {
         <>
           {parsed.ingredients ? (
             <View style={styles.section}>
-              <Text style={styles.sectionHeader}>Ingredients</Text>
+              <Text style={styles.sectionHeader}>{t.recipeIngredientsLabel}</Text>
               <Text style={styles.body}>{parsed.ingredients}</Text>
             </View>
           ) : null}
           {parsed.instructions ? (
             <View style={styles.section}>
-              <Text style={styles.sectionHeader}>Instructions</Text>
+              <Text style={styles.sectionHeader}>{t.recipeInstructionsLabel}</Text>
               <Text style={styles.body}>{parsed.instructions}</Text>
             </View>
           ) : null}

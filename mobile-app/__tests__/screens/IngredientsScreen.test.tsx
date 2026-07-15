@@ -30,13 +30,13 @@ describe("IngredientsScreen", () => {
     await user.press(screen.getByTestId("ingredients-submit"));
 
     await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledTimes(1));
-    const [ingredientsArg, maxResultsArg, isGroceryProductArg] = mockedGetRecipes.mock.calls[0];
+    const [ingredientsArg, maxResultsArg, isGroceryProductArg, languageArg] = mockedGetRecipes.mock.calls[0];
     expect(ingredientsArg.map((s: string) => s.trim())).toEqual(["chicken", "rice"]);
     expect(maxResultsArg).toBe(1);
-    // Free-typed input must never be flagged as a grocery product (omitted here, relying
-    // on getRecipesFromIngredients' own default of false) — flagging it would let the
-    // backend's Norwegian-heading normalizer corrupt arbitrary English text.
-    expect(isGroceryProductArg).toBeUndefined();
+    // Free-typed input must never be flagged as a grocery product -- flagging it
+    // would let the backend's Norwegian-heading normalizer corrupt arbitrary English text.
+    expect(isGroceryProductArg).toBe(false);
+    expect(languageArg).toBe("en");
     expect(await screen.findByText("Chicken Rice")).toBeTruthy();
   });
 
@@ -75,7 +75,7 @@ describe("IngredientsScreen", () => {
     await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledTimes(2));
     const [, maxResultsArg, isGroceryProductArg] = mockedGetRecipes.mock.calls[1];
     expect(maxResultsArg).toBe(2);
-    expect(isGroceryProductArg).toBeUndefined();
+    expect(isGroceryProductArg).toBe(false);
     expect(await screen.findByText("Chicken Fried Rice")).toBeTruthy();
     expect(screen.getByText("Chicken Rice")).toBeTruthy();
   });

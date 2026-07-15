@@ -50,7 +50,7 @@ describe("DealDetailScreen", () => {
 
     await renderWithProviders(<DealDetailScreen />);
 
-    await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 1, true));
+    await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 1, true, "en"));
     expect(await screen.findByText("Cheese Board")).toBeTruthy();
   });
 
@@ -84,7 +84,7 @@ describe("DealDetailScreen", () => {
 
     await user.press(showMoreButton);
 
-    await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 2, true));
+    await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 2, true, "en"));
     expect(await screen.findByText("Grilled Cheese")).toBeTruthy();
     expect(screen.getByText("Cheese Board")).toBeTruthy();
   });

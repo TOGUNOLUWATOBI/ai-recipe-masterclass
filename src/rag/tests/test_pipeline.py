@@ -7,12 +7,12 @@ import json
 from rag.config import RecipeRAGConfig
 from rag.pipeline import (
     SYSTEM_PROMPT,
-    SYSTEM_PROMPT_NO,
     RecipeRAGPipeline,
     _chunk_hash,
+    _parse_recipe_sections,
     _point_id,
     _split_generated_recipes,
-    _system_prompt,
+    _translate_recipe_text,
 )
 
 
@@ -526,33 +526,100 @@ def test_find_recipes_or_generate_normalize_true_still_normalizes_generation_pro
 
 
 # ---------------------------------------------------------------------------
-# Language support (EN/NO) -- _system_prompt() selects which system prompt variant
-# each generation call uses; language is threaded through find_recipes_or_generate(),
-# run_query(), and run_query_stream().
+# Recipe-section parsing/reassembly (_parse_recipe_sections, _translate_recipe_text)
+# -- the Python mirror of mobile-app/src/utils/parseRecipeText.ts, used to translate
+# just the title/ingredients/instructions CONTENT of a recipe without disturbing the
+# "### "/"**Ingredients:**"/"**Instructions:**" structural markers the mobile app
+# depends on to render the card.
 # ---------------------------------------------------------------------------
 
-def test_system_prompt_defaults_to_english():
-    assert _system_prompt("en") is SYSTEM_PROMPT
-    assert _system_prompt("anything-unrecognized") is SYSTEM_PROMPT
+_SAMPLE_RECIPE = "### Chicken Rice\n\n**Ingredients:**\nchicken, rice, salt\n\n**Instructions:**\nCook it."
 
 
-def test_system_prompt_selects_norwegian_variant():
-    assert _system_prompt("no") is SYSTEM_PROMPT_NO
+def test_parse_recipe_sections_extracts_all_three_fields():
+    sections = _parse_recipe_sections(_SAMPLE_RECIPE)
+    assert sections == {"title": "Chicken Rice", "ingredients": "chicken, rice, salt", "instructions": "Cook it."}
 
 
-def test_system_prompt_no_only_differs_in_the_language_rule():
-    """Everything except rule 6 (formatting, no-hallucination, reference-recipe
-    handling) must be identical between the two variants -- language selection isn't
-    supposed to change anything else about how the model behaves."""
-    en_lines = SYSTEM_PROMPT.splitlines()
-    no_lines = SYSTEM_PROMPT_NO.splitlines()
-    assert len(en_lines) == len(no_lines)
-    differing = [i for i, (a, b) in enumerate(zip(en_lines, no_lines)) if a != b]
-    assert differing == [en_lines.index("6. Use only standard, plain English text.")]
-    assert "Norwegian" in SYSTEM_PROMPT_NO
+def test_parse_recipe_sections_all_none_for_unstructured_text():
+    assert _parse_recipe_sections("just some free text with no heading at all") == {
+        "title": None, "ingredients": None, "instructions": None,
+    }
 
 
-def test_find_recipes_or_generate_uses_norwegian_system_prompt_when_requested():
+def _uppercase_translate(texts):
+    """Fake translate_fn standing in for RemoteRetriever.translate_to_norwegian() --
+    deterministic and distinguishable from the input, so tests can assert translation
+    actually happened without needing a real model."""
+    return [t.upper() for t in texts]
+
+
+def test_translate_recipe_text_translates_each_section_and_preserves_markers():
+    result = _translate_recipe_text(_SAMPLE_RECIPE, _uppercase_translate)
+
+    assert result == (
+        "### CHICKEN RICE\n\n**Ingredients:**\nCHICKEN, RICE, SALT\n\n**Instructions:**\nCOOK IT."
+    )
+
+
+def test_translate_recipe_text_handles_multiple_recipe_blocks():
+    text = _SAMPLE_RECIPE + "\n\n### Beef Stew\n\n**Ingredients:**\nbeef\n\n**Instructions:**\nStew it."
+
+    result = _translate_recipe_text(text, _uppercase_translate)
+
+    assert "### CHICKEN RICE" in result
+    assert "### BEEF STEW" in result
+
+
+def test_translate_recipe_text_translates_unstructured_prose_as_one_span():
+    result = _translate_recipe_text("just some free text with no heading at all", _uppercase_translate)
+
+    assert result == "JUST SOME FREE TEXT WITH NO HEADING AT ALL"
+
+
+def test_translate_recipe_text_returns_input_unchanged_for_blank_text():
+    assert _translate_recipe_text("", _uppercase_translate) == ""
+    assert _translate_recipe_text("   ", _uppercase_translate) == "   "
+
+
+def test_translate_recipe_text_batches_one_call_per_block_not_per_field():
+    """Regression guard on round-trip cost: translating a recipe's title +
+    ingredients + instructions must be one call to translate_fn, not three."""
+    calls = []
+
+    def counting_translate(texts):
+        calls.append(list(texts))
+        return [t.upper() for t in texts]
+
+    _translate_recipe_text(_SAMPLE_RECIPE, counting_translate)
+
+    assert len(calls) == 1
+    assert calls[0] == ["Chicken Rice", "chicken, rice, salt", "Cook it."]
+
+
+# ---------------------------------------------------------------------------
+# Language support (EN/NO) -- generation always happens in English (SYSTEM_PROMPT,
+# unconditionally); language="no" is applied afterward as a translation pass over
+# that English output, via RecipeRAGPipeline._translate_recipes()/_translate_answer().
+# ---------------------------------------------------------------------------
+
+class _FakeTranslatingRetriever:
+    """Stands in for RemoteRetriever -- the only retriever with translate_to_norwegian()
+    in the real deployment (see build_index_remote())."""
+
+    def __init__(self):
+        self.calls = []
+
+    def translate_to_norwegian(self, texts):
+        self.calls.append(list(texts))
+        return [t.upper() for t in texts]
+
+
+def test_find_recipes_or_generate_always_generates_in_english():
+    """Regardless of the requested language, the generation call itself must always
+    use the plain English SYSTEM_PROMPT -- confirmed live that asking the fine-tuned
+    model for Norwegian directly has no effect at all, so this pipeline no longer
+    tries; language="no" is a separate translation pass instead (see below)."""
     config = RecipeRAGConfig()
     pipeline = RecipeRAGPipeline(config)
     pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
@@ -565,51 +632,155 @@ def test_find_recipes_or_generate_uses_norwegian_system_prompt_when_requested():
     pipeline.generator = type("FakeGenerator", (), {"generate": fake_generate})()
     pipeline.find_recipes_or_generate(["chicken"], max_results=1, language="no")
 
-    assert seen_prompts[0] == SYSTEM_PROMPT_NO
-
-
-def test_find_recipes_or_generate_defaults_to_english_system_prompt():
-    config = RecipeRAGConfig()
-    pipeline = RecipeRAGPipeline(config)
-    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
-    seen_prompts = []
-
-    def fake_generate(self, question, context, system_prompt, **kwargs):
-        seen_prompts.append(system_prompt)
-        return "### Test\n\n**Ingredients:**\na\n\n**Instructions:**\ndo x"
-
-    pipeline.generator = type("FakeGenerator", (), {"generate": fake_generate})()
-    pipeline.find_recipes_or_generate(["chicken"], max_results=1)
-
     assert seen_prompts[0] == SYSTEM_PROMPT
 
 
-def test_run_query_uses_norwegian_system_prompt_when_requested(monkeypatch):
+def test_find_recipes_or_generate_translates_generated_recipes_when_requested():
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
+    pipeline.generator = type("FakeGenerator", (), {
+        "generate": lambda self, *a, **k: "### Chicken Rice\n\n**Ingredients:**\nchicken\n\n**Instructions:**\nCook it.",
+    })()
+    pipeline.retriever = _FakeTranslatingRetriever()
+
+    result = pipeline.find_recipes_or_generate(["chicken"], max_results=1, language="no")
+
+    assert result["recipes"][0]["title"] == "CHICKEN RICE"
+    assert "CHICKEN" in result["recipes"][0]["text"]
+
+
+def test_find_recipes_or_generate_translates_corpus_recipes_when_requested():
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: [
+        {
+            "payload": {"title": "Chicken Rice"},
+            "text": "### Chicken Rice\n\n**Ingredients:**\nchicken\n\n**Instructions:**\nCook it.",
+            "rerank_score": 5.0, "dense_score": 0.9,
+        },
+    ]
+    pipeline.retriever = _FakeTranslatingRetriever()
+
+    result = pipeline.find_recipes_or_generate(["chicken"], max_results=1, language="no")
+
+    assert result["source"] == "corpus"
+    assert result["recipes"][0]["title"] == "CHICKEN RICE"
+
+
+def test_find_recipes_or_generate_defaults_to_english_and_skips_translation():
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
+    pipeline.generator = type("FakeGenerator", (), {
+        "generate": lambda self, *a, **k: "### Chicken Rice\n\n**Ingredients:**\nchicken\n\n**Instructions:**\nCook it.",
+    })()
+    retriever = _FakeTranslatingRetriever()
+    pipeline.retriever = retriever
+
+    result = pipeline.find_recipes_or_generate(["chicken"], max_results=1)
+
+    assert result["recipes"][0]["title"] == "Chicken Rice"
+    assert retriever.calls == []
+
+
+def test_find_recipes_or_generate_keeps_english_when_no_translator_available():
+    """language="no" with a retriever that has no translate_to_norwegian() (e.g. the
+    local in-process HybridRetriever, never used by pipeline_server.py in practice,
+    or simply None) must not crash -- it just can't translate, so it doesn't."""
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
+    pipeline.generator = type("FakeGenerator", (), {
+        "generate": lambda self, *a, **k: "### Chicken Rice\n\n**Ingredients:**\nchicken\n\n**Instructions:**\nCook it.",
+    })()
+    pipeline.retriever = None
+
+    result = pipeline.find_recipes_or_generate(["chicken"], max_results=1, language="no")
+
+    assert result["recipes"][0]["title"] == "Chicken Rice"
+
+
+def test_find_recipes_or_generate_keeps_english_when_translation_raises():
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
+    pipeline.generator = type("FakeGenerator", (), {
+        "generate": lambda self, *a, **k: "### Chicken Rice\n\n**Ingredients:**\nchicken\n\n**Instructions:**\nCook it.",
+    })()
+
+    class _BrokenRetriever:
+        def translate_to_norwegian(self, texts):
+            raise ConnectionError("rag-service unreachable")
+
+    pipeline.retriever = _BrokenRetriever()
+
+    result = pipeline.find_recipes_or_generate(["chicken"], max_results=1, language="no")
+
+    assert result["recipes"][0]["title"] == "Chicken Rice"
+
+
+def test_run_query_translates_the_answer_when_requested(monkeypatch):
     config = RecipeRAGConfig()
     pipeline = RecipeRAGPipeline(config)
     monkeypatch.setattr(pipeline, "_retrieve_and_build_context", lambda question, top_k: ([], [], "context"))
     seen_prompts = []
     pipeline.generator = type("FakeGenerator", (), {
-        "generate": lambda self, question, context, system_prompt, **kwargs: seen_prompts.append(system_prompt) or "answer",
+        "generate": lambda self, question, context, system_prompt, **kwargs: seen_prompts.append(system_prompt) or "hello",
     })()
+    pipeline.retriever = _FakeTranslatingRetriever()
 
-    pipeline.run_query("what's for dinner?", language="no")
+    result = pipeline.run_query("what's for dinner?", language="no")
 
-    assert seen_prompts[0] == SYSTEM_PROMPT_NO
+    assert seen_prompts[0] == SYSTEM_PROMPT  # generation is always English
+    assert result["answer"] == "HELLO"
 
 
-def test_run_query_stream_uses_norwegian_system_prompt_when_requested(monkeypatch):
+def test_run_query_leaves_the_answer_in_english_by_default(monkeypatch):
     config = RecipeRAGConfig()
     pipeline = RecipeRAGPipeline(config)
     monkeypatch.setattr(pipeline, "_retrieve_and_build_context", lambda question, top_k: ([], [], "context"))
-    seen_prompts = []
+    pipeline.generator = type("FakeGenerator", (), {
+        "generate": lambda self, question, context, system_prompt, **kwargs: "hello",
+    })()
+    retriever = _FakeTranslatingRetriever()
+    pipeline.retriever = retriever
+
+    result = pipeline.run_query("what's for dinner?")
+
+    assert result["answer"] == "hello"
+    assert retriever.calls == []
+
+
+def test_run_query_stream_buffers_and_translates_as_one_chunk_when_requested(monkeypatch):
+    """language="no" can't stream progressively (translation needs the complete
+    answer) -- it must buffer the full generation and yield it as a single
+    translated chunk instead of many untranslated ones."""
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    monkeypatch.setattr(pipeline, "_retrieve_and_build_context", lambda question, top_k: ([], [], "context"))
+    pipeline.generator = type("FakeGenerator", (), {"generate": lambda self, *a, **k: "hello"})()
+    pipeline.retriever = _FakeTranslatingRetriever()
+
+    events = list(pipeline.run_query_stream("what's for dinner?", language="no"))
+
+    chunks = [e["text"] for e in events if e["type"] == "chunk"]
+    assert chunks == ["HELLO"]
+
+
+def test_run_query_stream_streams_progressively_in_english_by_default(monkeypatch):
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    monkeypatch.setattr(pipeline, "_retrieve_and_build_context", lambda question, top_k: ([], [], "context"))
 
     def fake_generate_stream(self, question, context, system_prompt):
-        seen_prompts.append(system_prompt)
-        yield "answer"
+        yield "hel"
+        yield "lo"
 
     pipeline.generator = type("FakeGenerator", (), {"generate_stream": fake_generate_stream})()
+    pipeline.retriever = _FakeTranslatingRetriever()
 
-    list(pipeline.run_query_stream("what's for dinner?", language="no"))
+    events = list(pipeline.run_query_stream("what's for dinner?"))
 
-    assert seen_prompts[0] == SYSTEM_PROMPT_NO
+    chunks = [e["text"] for e in events if e["type"] == "chunk"]
+    assert chunks == ["hel", "lo"]

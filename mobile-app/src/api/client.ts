@@ -1,4 +1,5 @@
 import { API_BASE_URL, DEFAULT_TIMEOUT_MS, DISCOUNTED_TIMEOUT_MS } from "../config";
+import type { Language } from "../i18n/language";
 import type { DiscountedResponse, GeneratedRecipe, IngredientsResponse, QueryResponse } from "../types/api";
 import { ApiError } from "./errors";
 import { MAX_INGREDIENT_COUNT, sanitizeIngredients, sanitizeQuestion } from "./validation";
@@ -42,11 +43,11 @@ function isRecipeArray(value: unknown): value is GeneratedRecipe[] {
   return Array.isArray(value) && value.every((item) => typeof item === "object" && item !== null && "text" in item);
 }
 
-export async function askQuestion(question: string): Promise<QueryResponse> {
+export async function askQuestion(question: string, language: Language = "en"): Promise<QueryResponse> {
   const sanitized = sanitizeQuestion(question);
   const data = await fetchJson<QueryResponse>(
     "/query",
-    { method: "POST", body: JSON.stringify({ question: sanitized }) },
+    { method: "POST", body: JSON.stringify({ question: sanitized, language }) },
     DEFAULT_TIMEOUT_MS
   );
 
@@ -59,7 +60,8 @@ export async function askQuestion(question: string): Promise<QueryResponse> {
 export async function getRecipesFromIngredients(
   ingredients: string[],
   maxResults = 10,
-  isGroceryProduct: boolean = false
+  isGroceryProduct: boolean = false,
+  language: Language = "en"
 ): Promise<IngredientsResponse> {
   const sanitized = sanitizeIngredients(ingredients);
   const cappedResults = Math.max(1, Math.min(maxResults, MAX_INGREDIENT_COUNT));
@@ -71,6 +73,7 @@ export async function getRecipesFromIngredients(
         ingredients: sanitized,
         max_results: cappedResults,
         is_grocery_product: isGroceryProduct,
+        language,
       }),
     },
     DEFAULT_TIMEOUT_MS
@@ -84,15 +87,17 @@ export async function getRecipesFromIngredients(
 
 export async function getDiscountedRecipes(
   maxResults = 10,
-  includeRecipes = true
+  includeRecipes = true,
+  language: Language = "en"
 ): Promise<DiscountedResponse> {
   const cappedResults = Math.max(1, Math.min(maxResults, MAX_INGREDIENT_COUNT));
   // The discount list itself comes from a cache the backend refreshes on a daily cron
   // job (not a live API call per request), so this is fast regardless —
-  // includeRecipes=false additionally skips the LLM generation pass for callers that
-  // only need the browsable deal list right now (see StoresScreen).
+  // includeRecipes=false additionally skips the LLM generation pass (and so the
+  // language param has no effect) for callers that only need the browsable deal list
+  // right now (see StoresScreen).
   const data = await fetchJson<DiscountedResponse>(
-    `/recipes/discounted?max_results=${cappedResults}&include_recipes=${includeRecipes}`,
+    `/recipes/discounted?max_results=${cappedResults}&include_recipes=${includeRecipes}&language=${language}`,
     { method: "GET" },
     includeRecipes ? DISCOUNTED_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
   );

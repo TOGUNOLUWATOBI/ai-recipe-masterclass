@@ -10,7 +10,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional
 
 from .config import RecipeRAGConfig
 
@@ -58,28 +58,17 @@ USING REFERENCE RECIPES:
 - Never mention "the reference recipe," "the context," or that you were given supporting material —
   just answer as the chef."""
 
-# Only rule 6 differs from SYSTEM_PROMPT above -- everything else (formatting, no
-# hallucination, reference-recipe handling) applies identically regardless of output
-# language. Only ever applies to LLM-GENERATED text: run_query()/run_query_stream()'s
-# answer and find_recipes_or_generate()'s fallback-generation path. Corpus-sourced
-# recipes returned by find_recipes_or_generate() (source="corpus") are pre-existing
-# English text from the corpus itself -- this prompt has no effect on those, they are
-# never translated (see _system_prompt()'s docstring for why).
-SYSTEM_PROMPT_NO = SYSTEM_PROMPT.replace(
-    "6. Use only standard, plain English text.",
-    "6. Respond entirely in Norwegian (bokmål), including the recipe title, ingredient "
-    "list, and instructions -- use standard Norwegian recipe terminology.",
-)
-
-
-def _system_prompt(language: str) -> str:
-    """language="no" selects the Norwegian-output variant, anything else (including
-    the default "en") keeps the original English-only prompt. Deliberately not used
-    to translate corpus-sourced recipes -- those are real pre-existing English text,
-    not something this pipeline generates, and translating them would need a separate
-    LLM pass this MVP doesn't attempt; callers decide how to present an English corpus
-    recipe when Norwegian is selected (see pipeline_server.py)."""
-    return SYSTEM_PROMPT_NO if language == "no" else SYSTEM_PROMPT
+# Generation always happens in English, regardless of the request's language --
+# confirmed live (2026-07-15) that asking this system prompt for Norwegian output
+# directly (a "Respond in Norwegian" rule 6 variant) has NO effect: the fine-tuned
+# model (toriko3) ignores it completely, even when the instruction is baked into a
+# fresh Ollama Modelfile's own SYSTEM field rather than sent at runtime -- this isn't
+# a prompt-wording problem, the fine-tuning itself baked in an overwhelming English
+# bias. language="no" is instead handled as a separate translation PASS over this
+# same English output, via a dedicated NMT model (see translator.py and
+# _translate_recipe_text()) -- keeping generation English-only-always here is what
+# makes that translation step safe to always apply unconditionally, rather than
+# needing to guess whether a given generation call already came back in Norwegian.
 
 
 def _point_id(source_file: str, chunk_id) -> str:
@@ -154,6 +143,75 @@ def _split_generated_recipes(text: str) -> List[Dict[str, str]]:
         title = block.split("\n", 1)[0][len("### "):].strip()
         recipes.append({"title": title, "text": block})
     return recipes
+
+
+# Same "### Title" / "**Ingredients:**" / "**Instructions:**" convention as
+# SYSTEM_PROMPT and recipe_loader.py -- kept in sync with the mobile app's
+# parseRecipeText.ts, which extracts these same three fields client-side to render a
+# recipe card. Case-insensitive and tolerant of "Instructions and Tips" the same way
+# that parser is, since it parses the same LLM-generated text.
+_TITLE_RE = re.compile(r"^###\s*(.+)$", re.MULTILINE)
+_INGREDIENTS_RE = re.compile(r"\*\*Ingredients:?\*\*\s*(.*?)(?=\*\*Instructions|\n###|\Z)", re.IGNORECASE | re.DOTALL)
+_INSTRUCTIONS_RE = re.compile(r"\*\*Instructions(?: and Tips)?:?\*\*\s*(.*?)(?=\n###|\Z)", re.IGNORECASE | re.DOTALL)
+
+
+def _parse_recipe_sections(text: str) -> Dict[str, Optional[str]]:
+    """Python mirror of mobile-app/src/utils/parseRecipeText.ts -- every field is
+    optional on purpose, same reasoning as that parser: LLM-generated text isn't
+    guaranteed to follow the convention exactly."""
+    title_match = _TITLE_RE.search(text)
+    ingredients_match = _INGREDIENTS_RE.search(text)
+    instructions_match = _INSTRUCTIONS_RE.search(text)
+    return {
+        "title": title_match.group(1).strip() if title_match else None,
+        "ingredients": ingredients_match.group(1).strip() if ingredients_match else None,
+        "instructions": instructions_match.group(1).strip() if instructions_match else None,
+    }
+
+
+def _translate_recipe_text(text: str, translate_fn: Callable[[List[str]], List[str]]) -> str:
+    """Structure-aware translation of one recipe's Markdown text (or free-form answer
+    text that may contain zero or more "### Title" blocks) -- translates only the
+    title/ingredients/instructions CONTENT, never the "### " / "**Ingredients:**" /
+    "**Instructions:**" structural markers parseRecipeText.ts (mobile) depends on, so
+    the card still renders correctly after translation. Confirmed live this matters:
+    feeding the whole Markdown blob (headers, bold markers, newlines and all) to the
+    translation model in one shot mangles all of that structure -- see translator.py's
+    module docstring.
+
+    translate_fn is called once per recipe block, batching that block's title/
+    ingredients/instructions into a single request rather than one call per field, to
+    keep the number of round-trips to the remote translation model small. A block with
+    no recognized "### " heading (e.g. free-form prose with no structure at all) is
+    translated as a single untouched span instead."""
+    if not text or not text.strip():
+        return text
+
+    blocks = re.split(r"(?=^### )", text, flags=re.MULTILINE)
+    translated_blocks = []
+    for block in blocks:
+        stripped = block.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("### "):
+            translated_blocks.append(translate_fn([stripped])[0])
+            continue
+
+        sections = _parse_recipe_sections(stripped)
+        present = [field for field in ("title", "ingredients", "instructions") if sections[field]]
+        if not present:
+            translated_blocks.append(stripped)
+            continue
+        translated = dict(zip(present, translate_fn([sections[field] for field in present])))
+
+        parts = [f"### {translated.get('title', sections['title'])}"]
+        if "ingredients" in translated:
+            parts.append(f"**Ingredients:**\n{translated['ingredients']}")
+        if "instructions" in translated:
+            parts.append(f"**Instructions:**\n{translated['instructions']}")
+        translated_blocks.append("\n\n".join(parts))
+
+    return "\n\n".join(translated_blocks)
 
 
 class RecipeRAGPipeline:
@@ -380,9 +438,11 @@ class RecipeRAGPipeline:
         corpus-verified. "source" lets a caller distinguish a verified corpus match from
         a generated-and-possibly-hallucinated one, same as run_query()'s grounded field.
 
-        language="no" only affects the fallback-generation branch below (see
-        _system_prompt()) -- a corpus match (source="corpus") is real pre-existing
-        English recipe text, returned as-is regardless of language.
+        language="no" translates both branches' recipes (via _translate_recipes(),
+        see its docstring for the fallback-to-English-on-failure behavior) -- a
+        corpus match's title/text are real pre-existing English recipe text, so this
+        actually translates that content rather than generating anew, same as the
+        fallback branch below.
 
         normalize is forwarded to find_recipes_from_ingredients() and to the generation
         prompt below -- see that method's docstring for why this defaults to False and
@@ -400,6 +460,7 @@ class RecipeRAGPipeline:
                 }
                 for r in grounded
             ]
+            recipes = self._translate_recipes(recipes, language)
             return {"source": "corpus", "recipes": recipes, "generated": None, "error": None}
 
         # Asking for N recipes in one completion doesn't work — confirmed empirically:
@@ -454,7 +515,7 @@ class RecipeRAGPipeline:
             question = angles[i].format(ing=normalized_ingredients)
             try:
                 answer = self.generator.generate(
-                    question, "(no matching reference recipe found)", _system_prompt(language),
+                    question, "(no matching reference recipe found)", SYSTEM_PROMPT,
                     options={"temperature": 0.9},
                 )
                 answers.append(answer)
@@ -474,10 +535,14 @@ class RecipeRAGPipeline:
             {"title": r["title"], "text": r["text"], "rerank_score": None, "dense_score": None}
             for r in recipes
         ]
+        recipes = self._translate_recipes(recipes, language)
+        generated = "\n\n".join(answers) if answers else None
+        if generated:
+            generated = self._translate_answer(generated, language)
         return {
             "source": "generated",
             "recipes": recipes,
-            "generated": "\n\n".join(answers) if answers else None,
+            "generated": generated,
             "error": "; ".join(errors) if errors and not recipes else None,
         }
 
@@ -492,15 +557,62 @@ class RecipeRAGPipeline:
         ) or "(no matching reference recipe found)"
         return retrieved, grounded, context
 
+    def _translate_recipes(self, recipes: List[Dict[str, Any]], language: str) -> List[Dict[str, Any]]:
+        """Translates each recipe's title/text to Norwegian when language="no" and a
+        translation-capable retriever is available (RemoteRetriever.translate_to_norwegian()
+        -- only ever true in the real split-service deployment; see build_index_remote()).
+        A recipe that fails to translate (remote service down, model load error, ...)
+        keeps its English text and is logged, not dropped or turned into a request
+        failure over what's fundamentally a nice-to-have -- same self-healing
+        philosophy as grocery_discounts.py's product classification falling back to
+        its keyword heuristic."""
+        if language != "no" or not recipes:
+            return recipes
+        translate_fn = getattr(self.retriever, "translate_to_norwegian", None)
+        if translate_fn is None:
+            return recipes
+
+        translated = []
+        for recipe in recipes:
+            try:
+                translated_text = _translate_recipe_text(recipe["text"], translate_fn)
+                title_match = _TITLE_RE.search(translated_text)
+                translated.append({
+                    **recipe,
+                    "text": translated_text,
+                    "title": title_match.group(1).strip() if title_match else recipe["title"],
+                })
+            except Exception as e:
+                logger.error(f"Translation failed for recipe {recipe.get('title')!r}, keeping English: {e}")
+                translated.append(recipe)
+        return translated
+
+    def _translate_answer(self, answer: str, language: str) -> str:
+        """Same translation step as _translate_recipes(), for run_query()'s single
+        free-form answer string rather than a list of recipe dicts."""
+        if language != "no" or not answer:
+            return answer
+        translate_fn = getattr(self.retriever, "translate_to_norwegian", None)
+        if translate_fn is None:
+            return answer
+        try:
+            return _translate_recipe_text(answer, translate_fn)
+        except Exception as e:
+            logger.error(f"Translation failed for the answer, keeping English: {e}")
+            return answer
+
     def run_query(self, question: str, top_k: int = None, language: str = "en") -> Dict[str, Any]:
         start = time.time()
         retrieved, grounded, context = self._retrieve_and_build_context(question, top_k)
 
         # answer is None on failure, never an error string masquerading as a recipe —
-        # callers must check `error` before displaying `answer`.
+        # callers must check `error` before displaying `answer`. Generation is always
+        # English (see SYSTEM_PROMPT's comment on why) -- language="no" is applied as
+        # a translation pass afterward instead.
         answer, error = None, None
         try:
-            answer = self.generator.generate(question, context, _system_prompt(language))
+            answer = self.generator.generate(question, context, SYSTEM_PROMPT)
+            answer = self._translate_answer(answer, language)
         except Exception as e:
             logger.error(f"Generation failed for {question!r}: {e}")
             error = str(e)
@@ -523,14 +635,25 @@ class RecipeRAGPipeline:
           {"type": "meta", "retrieved": [...], "grounded": [...]}   (once, first)
           {"type": "chunk", "text": "..."}                          (many, as tokens arrive)
           {"type": "error", "error": "..."}                         (only on failure, last)
+
+        language="no" can't stream progressively the way English does -- translation
+        (see _translate_answer()) needs the complete answer, not partial tokens, so
+        that case buffers the full generation first and yields it as a single chunk.
+        Nothing today actually depends on live token-by-token Norwegian output (the
+        mobile app only ever calls the non-streaming /query), so this is a deliberate
+        simplification rather than a limitation worth engineering around.
         """
         start = time.time()
         retrieved, grounded, context = self._retrieve_and_build_context(question, top_k)
         yield {"type": "meta", "retrieved": retrieved, "grounded": grounded}
 
         try:
-            for chunk in self.generator.generate_stream(question, context, _system_prompt(language)):
-                yield {"type": "chunk", "text": chunk}
+            if language == "no":
+                answer = self.generator.generate(question, context, SYSTEM_PROMPT)
+                yield {"type": "chunk", "text": self._translate_answer(answer, language)}
+            else:
+                for chunk in self.generator.generate_stream(question, context, SYSTEM_PROMPT):
+                    yield {"type": "chunk", "text": chunk}
         except Exception as e:
             logger.error(f"Generation failed for {question!r}: {e}")
             yield {"type": "error", "error": str(e)}

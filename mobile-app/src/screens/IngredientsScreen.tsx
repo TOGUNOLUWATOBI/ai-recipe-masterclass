@@ -22,7 +22,7 @@ import type { IngredientsResponse } from "../types/api";
 
 export function IngredientsScreen() {
   const insets = useSafeAreaInsets();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const [ingredientsText, setIngredientsText] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<IngredientsResponse | null>(null);
@@ -46,7 +46,7 @@ export function IngredientsScreen() {
     const ingredients = ingredientsText.split(",");
     setSearchIngredients(ingredients);
     try {
-      const response = await getRecipesFromIngredients(ingredients, 1);
+      const response = await getRecipesFromIngredients(ingredients, 1, false, language);
       if (response.error) {
         setErrorMessage(response.error);
       } else {
@@ -58,7 +58,7 @@ export function IngredientsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [ingredientsText, loading]);
+  }, [ingredientsText, loading, language]);
 
   // "Show more" re-requests the same ingredients with a larger max_results, one more than
   // what's currently shown. It never disturbs the already-rendered cards or the "Find
@@ -73,7 +73,7 @@ export function IngredientsScreen() {
     const nextMax = Math.min(previousCount + 1, MAX_INGREDIENT_COUNT);
     setShowMoreLoading(true);
     setShowMoreErrorMessage(null);
-    getRecipesFromIngredients(searchIngredients, nextMax)
+    getRecipesFromIngredients(searchIngredients, nextMax, false, language)
       .then((response) => {
         if (response.error) {
           setShowMoreErrorMessage(response.error);
@@ -88,7 +88,7 @@ export function IngredientsScreen() {
       .finally(() => {
         setShowMoreLoading(false);
       });
-  }, [result, searchIngredients, showMoreLoading]);
+  }, [result, searchIngredients, showMoreLoading, language]);
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>

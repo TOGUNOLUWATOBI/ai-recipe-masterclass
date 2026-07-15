@@ -36,7 +36,7 @@ describe("AskScreen", () => {
     await user.type(screen.getByTestId("ask-input"), "norwegian ribbe");
     await user.press(screen.getByTestId("ask-submit"));
 
-    await waitFor(() => expect(mockedAskQuestion).toHaveBeenCalledWith("norwegian ribbe"));
+    await waitFor(() => expect(mockedAskQuestion).toHaveBeenCalledWith("norwegian ribbe", "en"));
     const card = await screen.findByTestId("recipe-card");
     expect(within(card).getByText("Ribbe")).toBeTruthy();
     expect(screen.getByText(/Based on: Ribbe/)).toBeTruthy();
