@@ -1,7 +1,8 @@
-import { render, screen, userEvent } from "@testing-library/react-native";
+import { screen, userEvent } from "@testing-library/react-native";
 import React from "react";
 import { StoreItemsScreen } from "../../src/screens/StoreItemsScreen";
 import type { DiscountedProduct } from "../../src/types/api";
+import { renderWithProviders } from "../../test-utils/testUtils";
 
 const DEALS: DiscountedProduct[] = [
   {
@@ -36,7 +37,7 @@ describe("StoreItemsScreen", () => {
   });
 
   it("renders a deal card for every item in the store's group", async () => {
-    await render(<StoreItemsScreen />);
+    await renderWithProviders(<StoreItemsScreen />);
 
     expect(screen.getByText("Camembert Le Rustique 250g")).toBeTruthy();
     expect(screen.getByText("Idun Rømmedressing 435g")).toBeTruthy();
@@ -44,7 +45,7 @@ describe("StoreItemsScreen", () => {
 
   it("navigates to the deal detail screen with the tapped deal", async () => {
     const user = userEvent.setup();
-    await render(<StoreItemsScreen />);
+    await renderWithProviders(<StoreItemsScreen />);
 
     const cards = screen.getAllByTestId("deal-card");
     await user.press(cards[0]);
@@ -53,7 +54,7 @@ describe("StoreItemsScreen", () => {
   });
 
   it("does not show a section header when every item in the store is the same category", async () => {
-    await render(<StoreItemsScreen />);
+    await renderWithProviders(<StoreItemsScreen />);
 
     expect(screen.queryByText("Food")).toBeNull();
     expect(screen.queryByText("Snacks")).toBeNull();
@@ -76,7 +77,7 @@ describe("StoreItemsScreen with mixed categories", () => {
   });
 
   it("splits a store's items into Food and Snacks sections", async () => {
-    await render(<StoreItemsScreen />);
+    await renderWithProviders(<StoreItemsScreen />);
 
     expect(await screen.findByText("Food")).toBeTruthy();
     expect(screen.getByText("Snacks")).toBeTruthy();

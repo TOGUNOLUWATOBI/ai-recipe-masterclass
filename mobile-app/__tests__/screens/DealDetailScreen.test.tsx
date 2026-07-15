@@ -1,9 +1,10 @@
-import { render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { screen, userEvent, waitFor } from "@testing-library/react-native";
 import React from "react";
 import { getRecipesFromIngredients } from "../../src/api/client";
 import { ApiError } from "../../src/api/errors";
 import { DealDetailScreen } from "../../src/screens/DealDetailScreen";
 import type { DiscountedProduct } from "../../src/types/api";
+import { renderWithProviders } from "../../test-utils/testUtils";
 
 jest.mock("../../src/api/client");
 
@@ -47,7 +48,7 @@ describe("DealDetailScreen", () => {
       error: null,
     });
 
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 1, true));
     expect(await screen.findByText("Cheese Board")).toBeTruthy();
@@ -64,7 +65,7 @@ describe("DealDetailScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     expect(await screen.findByText("Cheese Board")).toBeTruthy();
     const showMoreButton = await screen.findByTestId("show-more-button");
@@ -99,7 +100,7 @@ describe("DealDetailScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     const showMoreButton = await screen.findByTestId("show-more-button");
 
@@ -128,7 +129,7 @@ describe("DealDetailScreen", () => {
       error: null,
     });
 
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     await screen.findByText(/No recipes found/);
     expect(screen.queryByTestId("show-more-button")).toBeNull();
@@ -144,7 +145,7 @@ describe("DealDetailScreen", () => {
       error: null,
     });
 
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     expect(screen.getByText("Camembert Le Rustique 250g")).toBeTruthy();
     expect(screen.getByText("Coop")).toBeTruthy();
@@ -165,7 +166,7 @@ describe("DealDetailScreen", () => {
       error: null,
     });
 
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     expect(screen.getByText("68,90 kr")).toBeTruthy();
     expect(screen.queryByText("129,00 kr")).toBeNull();
@@ -182,7 +183,7 @@ describe("DealDetailScreen", () => {
       error: null,
     });
 
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     expect(await screen.findByText(/No recipes found/)).toBeTruthy();
   });
@@ -190,7 +191,7 @@ describe("DealDetailScreen", () => {
   it("shows an error banner when the request fails", async () => {
     mockedGetRecipes.mockRejectedValueOnce(new ApiError("timeout", "too slow"));
 
-    await render(<DealDetailScreen />);
+    await renderWithProviders(<DealDetailScreen />);
 
     expect(await screen.findByTestId("error-banner")).toBeTruthy();
   });

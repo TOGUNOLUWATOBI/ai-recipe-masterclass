@@ -10,14 +10,19 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getRecipesFromIngredients } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { MAX_INGREDIENT_COUNT } from "../api/validation";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { LanguageToggle } from "../components/LanguageToggle";
 import { RecipeCard } from "../components/RecipeCard";
+import { useLanguage } from "../i18n/LanguageContext";
 import type { IngredientsResponse } from "../types/api";
 
 export function IngredientsScreen() {
+  const insets = useSafeAreaInsets();
+  const { t } = useLanguage();
   const [ingredientsText, setIngredientsText] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<IngredientsResponse | null>(null);
@@ -87,12 +92,18 @@ export function IngredientsScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.heading}>What can I cook?</Text>
-        <Text style={styles.subheading}>Enter ingredients, separated by commas</Text>
+      <ScrollView
+        contentContainerStyle={[styles.container, { paddingTop: insets.top + 16 }]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.headerRow}>
+          <Text style={styles.heading}>{t.ingredientsHeading}</Text>
+          <LanguageToggle />
+        </View>
+        <Text style={styles.subheading}>{t.ingredientsSubheading}</Text>
         <TextInput
           style={styles.input}
-          placeholder="e.g. chicken, tomatoes, onions, rice"
+          placeholder={t.ingredientsPlaceholder}
           value={ingredientsText}
           onChangeText={setIngredientsText}
           editable={!loading}
@@ -106,7 +117,7 @@ export function IngredientsScreen() {
           disabled={loading}
           testID="ingredients-submit"
         >
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Find recipes</Text>}
+          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{t.ingredientsButton}</Text>}
         </TouchableOpacity>
 
         {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
@@ -115,8 +126,8 @@ export function IngredientsScreen() {
           <View>
             <Text style={styles.sourceNote}>
               {result.source === "corpus"
-                ? `Found ${result.count} matching recipe${result.count === 1 ? "" : "s"}`
-                : `No exact match — ${result.count} generated suggestion${result.count === 1 ? "" : "s"}`}
+                ? t.ingredientsFoundCorpus(result.count)
+                : t.ingredientsFoundGenerated(result.count)}
             </Text>
             {result.recipes.map((recipe, index) => (
               <RecipeCard key={index} title={recipe.title} text={recipe.text} />
@@ -131,7 +142,7 @@ export function IngredientsScreen() {
                 {showMoreLoading ? (
                   <ActivityIndicator color="#c0392b" testID="show-more-loading" />
                 ) : (
-                  <Text style={styles.showMoreText}>Show more</Text>
+                  <Text style={styles.showMoreText}>{t.showMore}</Text>
                 )}
               </TouchableOpacity>
             ) : null}
@@ -146,7 +157,8 @@ export function IngredientsScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { padding: 16, backgroundColor: "#f5f5f5", flexGrow: 1 },
-  heading: { fontSize: 22, fontWeight: "700", marginBottom: 4 },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
+  heading: { fontSize: 22, fontWeight: "700" },
   subheading: { fontSize: 13, color: "#666", marginBottom: 12 },
   input: {
     backgroundColor: "#fff",

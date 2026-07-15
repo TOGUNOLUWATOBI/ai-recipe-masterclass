@@ -10,14 +10,19 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { askQuestion } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { LanguageToggle } from "../components/LanguageToggle";
 import { RecipeCard } from "../components/RecipeCard";
+import { useLanguage } from "../i18n/LanguageContext";
 import type { QueryResponse } from "../types/api";
 import { MAX_QUESTION_LENGTH } from "../api/validation";
 
 export function AskScreen() {
+  const insets = useSafeAreaInsets();
+  const { t } = useLanguage();
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<QueryResponse | null>(null);
@@ -51,11 +56,17 @@ export function AskScreen() {
       style={styles.flex}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.heading}>Ask for a recipe</Text>
+      <ScrollView
+        contentContainerStyle={[styles.container, { paddingTop: insets.top + 16 }]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.headerRow}>
+          <Text style={styles.heading}>{t.askHeading}</Text>
+          <LanguageToggle />
+        </View>
         <TextInput
           style={styles.input}
-          placeholder="e.g. norwegian ribbe, jollof rice, biryani..."
+          placeholder={t.askPlaceholder}
           value={question}
           onChangeText={setQuestion}
           maxLength={MAX_QUESTION_LENGTH}
@@ -70,7 +81,7 @@ export function AskScreen() {
           disabled={loading}
           testID="ask-submit"
         >
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Ask</Text>}
+          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{t.askButton}</Text>}
         </TouchableOpacity>
 
         {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
@@ -78,9 +89,9 @@ export function AskScreen() {
         {result && !errorMessage ? (
           <>
             {groundedTitles && groundedTitles.length > 0 ? (
-              <Text style={styles.groundedNote}>Based on: {groundedTitles.join(", ")}</Text>
+              <Text style={styles.groundedNote}>{t.askBasedOn(groundedTitles.join(", "))}</Text>
             ) : (
-              <Text style={styles.groundedNote}>No exact match found — best-effort answer below.</Text>
+              <Text style={styles.groundedNote}>{t.askNoExactMatch}</Text>
             )}
             {result.answer ? <RecipeCard text={result.answer} /> : null}
           </>
@@ -93,7 +104,8 @@ export function AskScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { padding: 16, backgroundColor: "#f5f5f5", flexGrow: 1 },
-  heading: { fontSize: 22, fontWeight: "700", marginBottom: 12 },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
+  heading: { fontSize: 22, fontWeight: "700" },
   input: {
     backgroundColor: "#fff",
     borderRadius: 8,

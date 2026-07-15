@@ -6,6 +6,7 @@ import {
   sanitizeQuestion,
   ValidationError,
 } from "../../src/api/validation";
+import { DEFAULT_LANGUAGE, setLanguage } from "../../src/i18n/language";
 
 describe("sanitizeQuestion", () => {
   it("trims whitespace", () => {
@@ -62,5 +63,18 @@ describe("sanitizeIngredients", () => {
 
   it("collapses internal whitespace per ingredient", () => {
     expect(sanitizeIngredients(["chicken   breast"])).toEqual(["chicken breast"]);
+  });
+});
+
+describe("validation messages respect the app language", () => {
+  afterEach(() => {
+    setLanguage(DEFAULT_LANGUAGE);
+  });
+
+  it("throws Norwegian messages when the app language is Norwegian", () => {
+    setLanguage("no");
+
+    expect(() => sanitizeQuestion("")).toThrow("Skriv inn et spørsmål.");
+    expect(() => sanitizeIngredients([])).toThrow("Skriv inn minst én ingrediens.");
   });
 });

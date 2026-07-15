@@ -1,19 +1,39 @@
+import { Ionicons } from "@expo/vector-icons";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { NavigationContainer } from "@react-navigation/native";
 import React from "react";
+import { useLanguage } from "../i18n/LanguageContext";
 import { AskScreen } from "../screens/AskScreen";
 import { IngredientsScreen } from "../screens/IngredientsScreen";
 import { TilbudStackNavigator } from "./TilbudStackNavigator";
 
 const Tab = createBottomTabNavigator();
 
+const TAB_ICONS: Record<string, { filled: keyof typeof Ionicons.glyphMap; outline: keyof typeof Ionicons.glyphMap }> = {
+  Tilbud: { filled: "pricetags", outline: "pricetags-outline" },
+  Ask: { filled: "chatbubble-ellipses", outline: "chatbubble-ellipses-outline" },
+  Ingredients: { filled: "restaurant", outline: "restaurant-outline" },
+};
+
 export function AppNavigator() {
+  const { t } = useLanguage();
+
   return (
     <NavigationContainer>
-      <Tab.Navigator screenOptions={{ headerShown: false }}>
-        <Tab.Screen name="Tilbud" component={TilbudStackNavigator} options={{ title: "Deals" }} />
-        <Tab.Screen name="Ask" component={AskScreen} />
-        <Tab.Screen name="Ingredients" component={IngredientsScreen} />
+      <Tab.Navigator
+        screenOptions={({ route }) => ({
+          headerShown: false,
+          tabBarActiveTintColor: "#e63946",
+          tabBarInactiveTintColor: "#999",
+          tabBarHideOnKeyboard: true,
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons name={focused ? TAB_ICONS[route.name].filled : TAB_ICONS[route.name].outline} color={color} size={size} />
+          ),
+        })}
+      >
+        <Tab.Screen name="Tilbud" component={TilbudStackNavigator} options={{ title: t.tabDeals }} />
+        <Tab.Screen name="Ask" component={AskScreen} options={{ title: t.tabAsk }} />
+        <Tab.Screen name="Ingredients" component={IngredientsScreen} options={{ title: t.tabIngredients }} />
       </Tab.Navigator>
     </NavigationContainer>
   );

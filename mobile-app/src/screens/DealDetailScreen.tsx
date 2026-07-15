@@ -7,6 +7,7 @@ import { userMessageForError } from "../api/errors";
 import { MAX_INGREDIENT_COUNT } from "../api/validation";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { RecipeCard } from "../components/RecipeCard";
+import { useLanguage } from "../i18n/LanguageContext";
 import type { TilbudStackParamList } from "../navigation/types";
 import type { IngredientsResponse } from "../types/api";
 
@@ -16,6 +17,7 @@ function formatNok(value: number): string {
 
 export function DealDetailScreen() {
   const route = useRoute<RouteProp<TilbudStackParamList, "DealDetail">>();
+  const { t } = useLanguage();
   const { deal } = route.params;
 
   const [loading, setLoading] = useState(true);
@@ -118,7 +120,7 @@ export function DealDetailScreen() {
         </View>
       </View>
 
-      <Text style={styles.recipesHeading}>Recipes with {deal.product_name}</Text>
+      <Text style={styles.recipesHeading}>{t.dealDetailRecipesWith(deal.product_name)}</Text>
 
       {loading ? (
         <ActivityIndicator size="large" color="#e63946" style={styles.spinner} testID="deal-detail-loading" />
@@ -139,14 +141,14 @@ export function DealDetailScreen() {
               {showMoreLoading ? (
                 <ActivityIndicator color="#e63946" testID="show-more-loading" />
               ) : (
-                <Text style={styles.showMoreText}>Show more</Text>
+                <Text style={styles.showMoreText}>{t.showMore}</Text>
               )}
             </TouchableOpacity>
           ) : null}
           {showMoreErrorMessage ? <ErrorBanner message={showMoreErrorMessage} /> : null}
         </>
       ) : (
-        <Text style={styles.emptyText}>No recipes found for this item.</Text>
+        <Text style={styles.emptyText}>{t.dealDetailEmpty}</Text>
       )}
     </ScrollView>
   );

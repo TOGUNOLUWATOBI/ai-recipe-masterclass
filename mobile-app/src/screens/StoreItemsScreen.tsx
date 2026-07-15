@@ -4,23 +4,26 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import React from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { DealCard } from "../components/DealCard";
+import { useLanguage } from "../i18n/LanguageContext";
 import type { TilbudStackParamList } from "../navigation/types";
 import type { DiscountedProduct } from "../types/api";
-
-// A missing/null category (an older cached row) falls into "Food", same fallback
-// StoresScreen's Food/Non-food tab split uses -- never silently dropped.
-const SECTIONS: { key: string; label: string; match: (d: DiscountedProduct) => boolean }[] = [
-  { key: "main_food", label: "Food", match: (d) => (d.category ?? "main_food") === "main_food" },
-  { key: "snack", label: "Snacks", match: (d) => d.category === "snack" },
-  { key: "non_food", label: "Non-food", match: (d) => d.category === "non_food" },
-];
 
 export function StoreItemsScreen() {
   const route = useRoute<RouteProp<TilbudStackParamList, "StoreItems">>();
   const navigation = useNavigation<NativeStackNavigationProp<TilbudStackParamList, "StoreItems">>();
+  const { t } = useLanguage();
   const { store } = route.params;
 
-  const sections = SECTIONS.map((section) => ({ ...section, deals: store.deals.filter(section.match) })).filter(
+  // A missing/null category (an older cached row) falls into "Food", same fallback
+  // StoresScreen's Food/Non-food tab split uses -- never silently dropped. Built
+  // inside the component (not a module constant) since labels are language-dependent.
+  const sectionDefs: { key: string; label: string; match: (d: DiscountedProduct) => boolean }[] = [
+    { key: "main_food", label: t.foodTab, match: (d) => (d.category ?? "main_food") === "main_food" },
+    { key: "snack", label: t.snacksSection, match: (d) => d.category === "snack" },
+    { key: "non_food", label: t.nonFoodTab, match: (d) => d.category === "non_food" },
+  ];
+
+  const sections = sectionDefs.map((section) => ({ ...section, deals: store.deals.filter(section.match) })).filter(
     (section) => section.deals.length > 0
   );
   // Only label sections when this store's items actually mix categories (the Food

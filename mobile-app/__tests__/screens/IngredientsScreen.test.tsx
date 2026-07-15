@@ -1,8 +1,9 @@
-import { render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { screen, userEvent, waitFor } from "@testing-library/react-native";
 import React from "react";
 import { getRecipesFromIngredients } from "../../src/api/client";
 import { ApiError } from "../../src/api/errors";
 import { IngredientsScreen } from "../../src/screens/IngredientsScreen";
+import { renderWithProviders } from "../../test-utils/testUtils";
 
 jest.mock("../../src/api/client");
 
@@ -24,7 +25,7 @@ describe("IngredientsScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<IngredientsScreen />);
+    await renderWithProviders(<IngredientsScreen />);
     await user.type(screen.getByTestId("ingredients-input"), "chicken, rice");
     await user.press(screen.getByTestId("ingredients-submit"));
 
@@ -50,7 +51,7 @@ describe("IngredientsScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<IngredientsScreen />);
+    await renderWithProviders(<IngredientsScreen />);
     await user.type(screen.getByTestId("ingredients-input"), "chicken, rice");
     await user.press(screen.getByTestId("ingredients-submit"));
 
@@ -90,7 +91,7 @@ describe("IngredientsScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<IngredientsScreen />);
+    await renderWithProviders(<IngredientsScreen />);
     await user.type(screen.getByTestId("ingredients-input"), "chicken");
     await user.press(screen.getByTestId("ingredients-submit"));
 
@@ -125,7 +126,7 @@ describe("IngredientsScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<IngredientsScreen />);
+    await renderWithProviders(<IngredientsScreen />);
     await user.type(screen.getByTestId("ingredients-input"), "chicken");
     await user.press(screen.getByTestId("ingredients-submit"));
 
@@ -143,7 +144,7 @@ describe("IngredientsScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<IngredientsScreen />);
+    await renderWithProviders(<IngredientsScreen />);
     await user.type(screen.getByTestId("ingredients-input"), "sea cucumber");
     await user.press(screen.getByTestId("ingredients-submit"));
 
@@ -154,7 +155,7 @@ describe("IngredientsScreen", () => {
     mockedGetRecipes.mockRejectedValueOnce(new ApiError("timeout", "too slow"));
 
     const user = userEvent.setup();
-    await render(<IngredientsScreen />);
+    await renderWithProviders(<IngredientsScreen />);
     await user.type(screen.getByTestId("ingredients-input"), "chicken");
     await user.press(screen.getByTestId("ingredients-submit"));
 

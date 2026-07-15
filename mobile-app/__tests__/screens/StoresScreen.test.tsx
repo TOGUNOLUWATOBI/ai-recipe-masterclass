@@ -1,9 +1,10 @@
-import { render, screen, userEvent } from "@testing-library/react-native";
+import { screen, userEvent } from "@testing-library/react-native";
 import React from "react";
 import { getDiscountedRecipes } from "../../src/api/client";
 import { ApiError } from "../../src/api/errors";
 import { StoresScreen } from "../../src/screens/StoresScreen";
 import type { DiscountedProduct } from "../../src/types/api";
+import { renderWithProviders } from "../../test-utils/testUtils";
 
 jest.mock("../../src/api/client");
 
@@ -51,7 +52,7 @@ describe("StoresScreen", () => {
       updated_at: "2026-07-08T09:19:17.306962+00:00",
     });
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     expect(mockedGetDiscounted).toHaveBeenCalledWith(20, false);
     expect(await screen.findByText("Coop")).toBeTruthy();
@@ -72,7 +73,7 @@ describe("StoresScreen", () => {
       updated_at: null,
     });
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     expect(await screen.findByText("Coop")).toBeTruthy();
     expect(screen.getByText("Kiwi")).toBeTruthy();
@@ -95,7 +96,7 @@ describe("StoresScreen", () => {
       updated_at: null,
     });
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     expect(await screen.findByText(/No items found/)).toBeTruthy();
   });
@@ -111,7 +112,7 @@ describe("StoresScreen", () => {
       updated_at: null,
     });
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     expect(await screen.findByText("discount cache not available")).toBeTruthy();
   });
@@ -119,7 +120,7 @@ describe("StoresScreen", () => {
   it("shows an error banner when the request fails outright", async () => {
     mockedGetDiscounted.mockRejectedValueOnce(new ApiError("network", "no connection"));
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     expect(await screen.findByTestId("error-banner")).toBeTruthy();
   });
@@ -148,7 +149,7 @@ describe("StoresScreen", () => {
       updated_at: null,
     });
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     // Coop groups its two food items (main_food + snack); Kiwi's only item is non_food
     // and shouldn't count toward the Food tab at all.
@@ -172,7 +173,7 @@ describe("StoresScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
     await screen.findByTestId("non-food-tab-button");
     await user.press(screen.getByTestId("non-food-tab-button"));
 
@@ -192,7 +193,7 @@ describe("StoresScreen", () => {
       updated_at: null,
     });
 
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
 
     expect(await screen.findByText("Coop")).toBeTruthy();
   });
@@ -210,7 +211,7 @@ describe("StoresScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<StoresScreen />);
+    await renderWithProviders(<StoresScreen />);
     await screen.findByTestId("store-card");
     await user.press(screen.getByTestId("store-card"));
 

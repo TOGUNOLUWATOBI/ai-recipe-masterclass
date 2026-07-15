@@ -1,8 +1,9 @@
-import { act, render, screen, userEvent, waitFor, within } from "@testing-library/react-native";
+import { act, screen, userEvent, waitFor, within } from "@testing-library/react-native";
 import React from "react";
 import { askQuestion } from "../../src/api/client";
 import { ApiError } from "../../src/api/errors";
 import { AskScreen } from "../../src/screens/AskScreen";
+import { renderWithProviders } from "../../test-utils/testUtils";
 
 jest.mock("../../src/api/client");
 
@@ -14,7 +15,7 @@ describe("AskScreen", () => {
   });
 
   it("renders the input and submit button", async () => {
-    await render(<AskScreen />);
+    await renderWithProviders(<AskScreen />);
     expect(screen.getByTestId("ask-input")).toBeTruthy();
     expect(screen.getByTestId("ask-submit")).toBeTruthy();
   });
@@ -31,7 +32,7 @@ describe("AskScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<AskScreen />);
+    await renderWithProviders(<AskScreen />);
     await user.type(screen.getByTestId("ask-input"), "norwegian ribbe");
     await user.press(screen.getByTestId("ask-submit"));
 
@@ -53,7 +54,7 @@ describe("AskScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<AskScreen />);
+    await renderWithProviders(<AskScreen />);
     await user.type(screen.getByTestId("ask-input"), "some obscure dish");
     await user.press(screen.getByTestId("ask-submit"));
 
@@ -64,7 +65,7 @@ describe("AskScreen", () => {
     mockedAskQuestion.mockRejectedValueOnce(new ApiError("network", "no connection"));
 
     const user = userEvent.setup();
-    await render(<AskScreen />);
+    await renderWithProviders(<AskScreen />);
     await user.type(screen.getByTestId("ask-input"), "test");
     await user.press(screen.getByTestId("ask-submit"));
 
@@ -84,7 +85,7 @@ describe("AskScreen", () => {
     });
 
     const user = userEvent.setup();
-    await render(<AskScreen />);
+    await renderWithProviders(<AskScreen />);
     await user.type(screen.getByTestId("ask-input"), "test");
     await user.press(screen.getByTestId("ask-submit"));
 
@@ -98,7 +99,7 @@ describe("AskScreen", () => {
     );
 
     const user = userEvent.setup();
-    await render(<AskScreen />);
+    await renderWithProviders(<AskScreen />);
     await user.type(screen.getByTestId("ask-input"), "test");
     await user.press(screen.getByTestId("ask-submit"));
     await user.press(screen.getByTestId("ask-submit")); // rapid second tap
