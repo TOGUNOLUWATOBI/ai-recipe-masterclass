@@ -6,10 +6,13 @@ import json
 
 from rag.config import RecipeRAGConfig
 from rag.pipeline import (
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_NO,
     RecipeRAGPipeline,
     _chunk_hash,
     _point_id,
     _split_generated_recipes,
+    _system_prompt,
 )
 
 
@@ -520,3 +523,93 @@ def test_find_recipes_or_generate_normalize_true_still_normalizes_generation_pro
 
     assert "shrimp" in seen_questions[0]
     assert "REKER" not in seen_questions[0]
+
+
+# ---------------------------------------------------------------------------
+# Language support (EN/NO) -- _system_prompt() selects which system prompt variant
+# each generation call uses; language is threaded through find_recipes_or_generate(),
+# run_query(), and run_query_stream().
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_defaults_to_english():
+    assert _system_prompt("en") is SYSTEM_PROMPT
+    assert _system_prompt("anything-unrecognized") is SYSTEM_PROMPT
+
+
+def test_system_prompt_selects_norwegian_variant():
+    assert _system_prompt("no") is SYSTEM_PROMPT_NO
+
+
+def test_system_prompt_no_only_differs_in_the_language_rule():
+    """Everything except rule 6 (formatting, no-hallucination, reference-recipe
+    handling) must be identical between the two variants -- language selection isn't
+    supposed to change anything else about how the model behaves."""
+    en_lines = SYSTEM_PROMPT.splitlines()
+    no_lines = SYSTEM_PROMPT_NO.splitlines()
+    assert len(en_lines) == len(no_lines)
+    differing = [i for i, (a, b) in enumerate(zip(en_lines, no_lines)) if a != b]
+    assert differing == [en_lines.index("6. Use only standard, plain English text.")]
+    assert "Norwegian" in SYSTEM_PROMPT_NO
+
+
+def test_find_recipes_or_generate_uses_norwegian_system_prompt_when_requested():
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
+    seen_prompts = []
+
+    def fake_generate(self, question, context, system_prompt, **kwargs):
+        seen_prompts.append(system_prompt)
+        return "### Test\n\n**Ingredients:**\na\n\n**Instructions:**\ndo x"
+
+    pipeline.generator = type("FakeGenerator", (), {"generate": fake_generate})()
+    pipeline.find_recipes_or_generate(["chicken"], max_results=1, language="no")
+
+    assert seen_prompts[0] == SYSTEM_PROMPT_NO
+
+
+def test_find_recipes_or_generate_defaults_to_english_system_prompt():
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    pipeline.find_recipes_from_ingredients = lambda ingredients, max_results=10, normalize=False: []
+    seen_prompts = []
+
+    def fake_generate(self, question, context, system_prompt, **kwargs):
+        seen_prompts.append(system_prompt)
+        return "### Test\n\n**Ingredients:**\na\n\n**Instructions:**\ndo x"
+
+    pipeline.generator = type("FakeGenerator", (), {"generate": fake_generate})()
+    pipeline.find_recipes_or_generate(["chicken"], max_results=1)
+
+    assert seen_prompts[0] == SYSTEM_PROMPT
+
+
+def test_run_query_uses_norwegian_system_prompt_when_requested(monkeypatch):
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    monkeypatch.setattr(pipeline, "_retrieve_and_build_context", lambda question, top_k: ([], [], "context"))
+    seen_prompts = []
+    pipeline.generator = type("FakeGenerator", (), {
+        "generate": lambda self, question, context, system_prompt, **kwargs: seen_prompts.append(system_prompt) or "answer",
+    })()
+
+    pipeline.run_query("what's for dinner?", language="no")
+
+    assert seen_prompts[0] == SYSTEM_PROMPT_NO
+
+
+def test_run_query_stream_uses_norwegian_system_prompt_when_requested(monkeypatch):
+    config = RecipeRAGConfig()
+    pipeline = RecipeRAGPipeline(config)
+    monkeypatch.setattr(pipeline, "_retrieve_and_build_context", lambda question, top_k: ([], [], "context"))
+    seen_prompts = []
+
+    def fake_generate_stream(self, question, context, system_prompt):
+        seen_prompts.append(system_prompt)
+        yield "answer"
+
+    pipeline.generator = type("FakeGenerator", (), {"generate_stream": fake_generate_stream})()
+
+    list(pipeline.run_query_stream("what's for dinner?", language="no"))
+
+    assert seen_prompts[0] == SYSTEM_PROMPT_NO

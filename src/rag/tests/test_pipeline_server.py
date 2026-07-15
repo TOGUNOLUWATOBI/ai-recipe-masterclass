@@ -11,12 +11,21 @@ retrieval-only container never needs fastapi's sibling ML deps; see pipeline.py'
 module docstring and requirements-retrieval.txt vs. requirements-pipeline.txt for the
 same split this respects."""
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("fastapi")
 
 from rag import pipeline_server  # noqa: E402
-from rag.pipeline_server import IngredientsRequest, recipes_discounted, recipes_from_ingredients  # noqa: E402
+from rag.pipeline_server import (  # noqa: E402
+    IngredientsRequest,
+    QueryRequest,
+    query,
+    query_stream,
+    recipes_discounted,
+    recipes_from_ingredients,
+)
 
 
 def _fake_result():
@@ -34,7 +43,7 @@ def test_ingredients_request_is_grocery_product_defaults_to_false():
 def test_recipes_from_ingredients_forwards_is_grocery_product_false_by_default(monkeypatch):
     seen = {}
 
-    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False):
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
         seen["normalize"] = normalize
         return _fake_result()
 
@@ -51,7 +60,7 @@ def test_recipes_from_ingredients_forwards_is_grocery_product_true(monkeypatch):
     real Tjek product name."""
     seen = {}
 
-    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False):
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
         seen["normalize"] = normalize
         return _fake_result()
 
@@ -70,7 +79,7 @@ def test_recipes_discounted_always_normalizes_unconditionally(monkeypatch):
     every time, regardless of what's in the snapshot."""
     seen = {}
 
-    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False):
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
         seen["normalize"] = normalize
         return _fake_result()
 
@@ -94,7 +103,7 @@ def test_recipes_discounted_treats_a_present_but_none_category_as_main_food(monk
     until the next scheduled Tjek sweep repopulates real categories."""
     seen = {}
 
-    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False):
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
         seen["ingredients"] = ingredients
         return _fake_result()
 
@@ -116,7 +125,7 @@ def test_recipes_discounted_excludes_non_main_food_from_the_recipe_query(monkeyp
     sensible recipe ingredient."""
     seen = {}
 
-    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False):
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
         seen["ingredients"] = ingredients
         return _fake_result()
 
@@ -179,3 +188,116 @@ def test_recipes_discounted_skips_generation_pass_when_include_recipes_false(mon
 
     assert result["recipes"] == []
     assert result["source"] is None
+
+
+# ---------------------------------------------------------------------------
+# Language (EN/NO) passthrough -- all three generation-touching routes forward
+# QueryRequest/IngredientsRequest's language field straight to the pipeline; the
+# request models default it to "en" so existing clients that never send it (or the
+# mobile app before it's updated to send one) keep today's English-only behavior.
+# ---------------------------------------------------------------------------
+
+def test_query_request_language_defaults_to_english():
+    assert QueryRequest(question="what's for dinner?").language == "en"
+
+
+def test_ingredients_request_language_defaults_to_english():
+    assert IngredientsRequest(ingredients=["chicken"]).language == "en"
+
+
+def test_query_forwards_language_to_run_query(monkeypatch):
+    seen = {}
+
+    def fake_run_query(question, top_k=None, language="en"):
+        seen["language"] = language
+        return {"question": question, "retrieved": [], "grounded": [], "context": "", "answer": "hei", "error": None, "elapsed": 0.1}
+
+    monkeypatch.setattr(pipeline_server.pipeline, "run_query", fake_run_query)
+
+    query(QueryRequest(question="hva kan jeg lage?", language="no"))
+
+    assert seen["language"] == "no"
+
+
+def test_query_defaults_to_english_when_not_specified(monkeypatch):
+    seen = {}
+
+    def fake_run_query(question, top_k=None, language="en"):
+        seen["language"] = language
+        return {"question": question, "retrieved": [], "grounded": [], "context": "", "answer": "hi", "error": None, "elapsed": 0.1}
+
+    monkeypatch.setattr(pipeline_server.pipeline, "run_query", fake_run_query)
+
+    query(QueryRequest(question="what can I cook?"))
+
+    assert seen["language"] == "en"
+
+
+def test_query_stream_forwards_language_to_run_query_stream(monkeypatch):
+    seen = {}
+
+    def fake_run_query_stream(question, top_k=None, language="en"):
+        seen["language"] = language
+        yield {"type": "chunk", "text": "hei"}
+
+    monkeypatch.setattr(pipeline_server.pipeline, "run_query_stream", fake_run_query_stream)
+
+    response = query_stream(QueryRequest(question="hva kan jeg lage?", language="no"))
+
+    async def consume():
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(consume())
+
+    assert seen["language"] == "no"
+
+
+def test_recipes_from_ingredients_forwards_language(monkeypatch):
+    seen = {}
+
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
+        seen["language"] = language
+        return _fake_result()
+
+    monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
+
+    recipes_from_ingredients(IngredientsRequest(ingredients=["kylling"], language="no"))
+
+    assert seen["language"] == "no"
+
+
+def test_recipes_discounted_forwards_language(monkeypatch):
+    seen = {}
+
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
+        seen["language"] = language
+        return _fake_result()
+
+    monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
+    monkeypatch.setattr(
+        pipeline_server, "get_latest_snapshot",
+        lambda db_path: ([{"product_name": "KYLLINGFILET", "category": "main_food"}], "2026-07-15T06:00:00+00:00"),
+    )
+
+    recipes_discounted(max_results=10, include_recipes=True, language="no")
+
+    assert seen["language"] == "no"
+
+
+def test_recipes_discounted_defaults_to_english_language(monkeypatch):
+    seen = {}
+
+    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
+        seen["language"] = language
+        return _fake_result()
+
+    monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
+    monkeypatch.setattr(
+        pipeline_server, "get_latest_snapshot",
+        lambda db_path: ([{"product_name": "KYLLINGFILET", "category": "main_food"}], "2026-07-15T06:00:00+00:00"),
+    )
+
+    recipes_discounted(max_results=10, include_recipes=True)
+
+    assert seen["language"] == "en"

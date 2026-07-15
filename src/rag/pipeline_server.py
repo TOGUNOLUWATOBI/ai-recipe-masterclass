@@ -58,17 +58,21 @@ app.add_middleware(
 class QueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = None
+    # "no" only affects the LLM-synthesized answer text itself -- language is not
+    # applied to retrieval/grounding, which stays keyed on the English corpus/reranker
+    # regardless (see pipeline.py's _system_prompt()).
+    language: str = "en"
 
 
 @app.post("/query")
 def query(req: QueryRequest):
-    return pipeline.run_query(req.question, top_k=req.top_k)
+    return pipeline.run_query(req.question, top_k=req.top_k, language=req.language)
 
 
 @app.post("/query/stream")
 def query_stream(req: QueryRequest):
     def event_gen():
-        for event in pipeline.run_query_stream(req.question, top_k=req.top_k):
+        for event in pipeline.run_query_stream(req.question, top_k=req.top_k, language=req.language):
             yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -87,6 +91,10 @@ class IngredientsRequest(BaseModel):
     # oil"), since its glossary/noise-token suffix matching was only validated against
     # real Norwegian Tjek headings, never English vocabulary.
     is_grocery_product: bool = False
+    # "no" only ever affects recipes this endpoint itself generates (source="generated")
+    # -- a corpus match (source="corpus") is real pre-existing English recipe text and
+    # is returned unmodified regardless (see pipeline.find_recipes_or_generate()).
+    language: str = "en"
 
 
 @app.post("/recipes/from-ingredients")
@@ -97,7 +105,7 @@ def recipes_from_ingredients(req: IngredientsRequest):
     for the v2 discount-driven recipe flow — feed it currently discounted ingredients,
     get back candidates to choose from instead of one generated answer."""
     result = pipeline.find_recipes_or_generate(
-        req.ingredients, max_results=req.max_results, normalize=req.is_grocery_product,
+        req.ingredients, max_results=req.max_results, normalize=req.is_grocery_product, language=req.language,
     )
     return {
         "ingredients": req.ingredients,
@@ -110,7 +118,7 @@ def recipes_from_ingredients(req: IngredientsRequest):
 
 
 @app.get("/recipes/discounted")
-def recipes_discounted(max_results: int = 10, include_recipes: bool = True):
+def recipes_discounted(max_results: int = 10, include_recipes: bool = True, language: str = "en"):
     """v2 discount-driven recipe flow: reads the latest cached Tjek (etilbudsavis.dk)
     flyer-offer scan (see discounts_store.py — populated by a cron-triggered
     refresh_discounts.py, not a live call on every request) and, unless
@@ -167,7 +175,9 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True):
     # Always normalize=True here, unconditionally, with no request-side flag needed --
     # unlike /recipes/from-ingredients, this list is always sourced from the real Tjek
     # discounts snapshot (see get_latest_snapshot() above), never arbitrary user input.
-    result = pipeline.find_recipes_or_generate(product_names, max_results=max_results, normalize=True)
+    result = pipeline.find_recipes_or_generate(
+        product_names, max_results=max_results, normalize=True, language=language,
+    )
     return {
         "discounted_ingredients": discounts,
         "source": result["source"],

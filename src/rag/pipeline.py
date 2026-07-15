@@ -58,6 +58,29 @@ USING REFERENCE RECIPES:
 - Never mention "the reference recipe," "the context," or that you were given supporting material —
   just answer as the chef."""
 
+# Only rule 6 differs from SYSTEM_PROMPT above -- everything else (formatting, no
+# hallucination, reference-recipe handling) applies identically regardless of output
+# language. Only ever applies to LLM-GENERATED text: run_query()/run_query_stream()'s
+# answer and find_recipes_or_generate()'s fallback-generation path. Corpus-sourced
+# recipes returned by find_recipes_or_generate() (source="corpus") are pre-existing
+# English text from the corpus itself -- this prompt has no effect on those, they are
+# never translated (see _system_prompt()'s docstring for why).
+SYSTEM_PROMPT_NO = SYSTEM_PROMPT.replace(
+    "6. Use only standard, plain English text.",
+    "6. Respond entirely in Norwegian (bokmål), including the recipe title, ingredient "
+    "list, and instructions -- use standard Norwegian recipe terminology.",
+)
+
+
+def _system_prompt(language: str) -> str:
+    """language="no" selects the Norwegian-output variant, anything else (including
+    the default "en") keeps the original English-only prompt. Deliberately not used
+    to translate corpus-sourced recipes -- those are real pre-existing English text,
+    not something this pipeline generates, and translating them would need a separate
+    LLM pass this MVP doesn't attempt; callers decide how to present an English corpus
+    recipe when Norwegian is selected (see pipeline_server.py)."""
+    return SYSTEM_PROMPT_NO if language == "no" else SYSTEM_PROMPT
+
 
 def _point_id(source_file: str, chunk_id) -> str:
     """Stable Qdrant point ID for a chunk, derived from its natural composite key
@@ -344,7 +367,7 @@ class RecipeRAGPipeline:
         return grounded[:max_results]
 
     def find_recipes_or_generate(
-        self, ingredients: list, max_results: int = 10, normalize: bool = False,
+        self, ingredients: list, max_results: int = 10, normalize: bool = False, language: str = "en",
     ) -> Dict[str, Any]:
         """Wraps find_recipes_from_ingredients() with an LLM fallback for when nothing in
         the corpus matches — e.g. an obscure dish/cuisine combination the corpus doesn't
@@ -356,6 +379,10 @@ class RecipeRAGPipeline:
         rerank_score/dense_score are None for generated entries since they're not
         corpus-verified. "source" lets a caller distinguish a verified corpus match from
         a generated-and-possibly-hallucinated one, same as run_query()'s grounded field.
+
+        language="no" only affects the fallback-generation branch below (see
+        _system_prompt()) -- a corpus match (source="corpus") is real pre-existing
+        English recipe text, returned as-is regardless of language.
 
         normalize is forwarded to find_recipes_from_ingredients() and to the generation
         prompt below -- see that method's docstring for why this defaults to False and
@@ -427,7 +454,7 @@ class RecipeRAGPipeline:
             question = angles[i].format(ing=normalized_ingredients)
             try:
                 answer = self.generator.generate(
-                    question, "(no matching reference recipe found)", SYSTEM_PROMPT,
+                    question, "(no matching reference recipe found)", _system_prompt(language),
                     options={"temperature": 0.9},
                 )
                 answers.append(answer)
@@ -465,7 +492,7 @@ class RecipeRAGPipeline:
         ) or "(no matching reference recipe found)"
         return retrieved, grounded, context
 
-    def run_query(self, question: str, top_k: int = None) -> Dict[str, Any]:
+    def run_query(self, question: str, top_k: int = None, language: str = "en") -> Dict[str, Any]:
         start = time.time()
         retrieved, grounded, context = self._retrieve_and_build_context(question, top_k)
 
@@ -473,7 +500,7 @@ class RecipeRAGPipeline:
         # callers must check `error` before displaying `answer`.
         answer, error = None, None
         try:
-            answer = self.generator.generate(question, context, SYSTEM_PROMPT)
+            answer = self.generator.generate(question, context, _system_prompt(language))
         except Exception as e:
             logger.error(f"Generation failed for {question!r}: {e}")
             error = str(e)
@@ -488,7 +515,9 @@ class RecipeRAGPipeline:
             "elapsed": time.time() - start,
         }
 
-    def run_query_stream(self, question: str, top_k: int = None) -> Iterator[Dict[str, Any]]:
+    def run_query_stream(
+        self, question: str, top_k: int = None, language: str = "en",
+    ) -> Iterator[Dict[str, Any]]:
         """Streaming counterpart to run_query() — yields a tagged sequence a caller can
         react to progressively instead of waiting 15-40s for the full answer:
           {"type": "meta", "retrieved": [...], "grounded": [...]}   (once, first)
@@ -500,7 +529,7 @@ class RecipeRAGPipeline:
         yield {"type": "meta", "retrieved": retrieved, "grounded": grounded}
 
         try:
-            for chunk in self.generator.generate_stream(question, context, SYSTEM_PROMPT):
+            for chunk in self.generator.generate_stream(question, context, _system_prompt(language)):
                 yield {"type": "chunk", "text": chunk}
         except Exception as e:
             logger.error(f"Generation failed for {question!r}: {e}")
