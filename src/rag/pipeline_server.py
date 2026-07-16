@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from .config import RecipeRAGConfig
 from .discounts_store import get_latest_snapshot
+from .meal_ideas import generate_meal_ideas_from_cart
 from .pipeline import RecipeRAGPipeline
 
 logging.basicConfig(level=logging.INFO)
@@ -190,6 +191,31 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True, lang
         "error": result["error"],
         "updated_at": updated_at,
     }
+
+
+class MealIdeasFromCartRequest(BaseModel):
+    discount_item_ids: List[str]
+    max_results: Optional[int] = 5
+    language: str = "en"
+
+
+@app.post("/meal-ideas/from-cart")
+def meal_ideas_from_cart(req: MealIdeasFromCartRequest):
+    """Epic C: generates practical meal ideas from a set of cart items, identified by
+    the same `f"{store_name}::{product_name}"` ids the mobile cart already uses (see
+    mobile-app/src/types/cart.ts's cartItemIdFor() and meal_ideas.py's
+    _discount_item_id() -- kept in sync by convention, not a shared runtime value,
+    since there's no real per-offer id yet).
+
+    Ids are resolved against the latest cached discount snapshot server-side and
+    independently re-checked for recipe eligibility -- the request never trusts
+    whatever classification the client might send, only the id itself (see
+    meal_ideas.generate_meal_ideas_from_cart() for the full pipeline: resolve -> filter
+    -> normalize -> retrieve-or-generate -> score coverage -> rank)."""
+    discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    return generate_meal_ideas_from_cart(
+        pipeline, discounts, req.discount_item_ids, max_results=req.max_results, language=req.language,
+    )
 
 
 @app.get("/health")

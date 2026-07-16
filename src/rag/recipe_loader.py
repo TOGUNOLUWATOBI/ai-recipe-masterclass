@@ -50,7 +50,13 @@ def load_recipe_sources(paths: List[Path]) -> List[Dict[str, Any]]:
       - instructions: list[str]
     Any extra fields (country, african_region, etc.) are preserved under 'metadata'.
 
-    Returns chunk dicts with: text, char_len, source_file, chunk_id, title.
+    Returns chunk dicts with: text, char_len, source_file, chunk_id, title, ingredients,
+    instructions. ingredients/instructions are kept as the original structured lists
+    (not just flattened into `text`) so downstream consumers -- meal_ideas.py's
+    ingredient-coverage matching (Epic C4) -- can work against real per-recipe
+    ingredient lines instead of re-parsing a comma-joined blob back apart, which is
+    lossy (individual ingredient lines routinely contain their own internal commas,
+    e.g. "4 lbs (1.8 kg) pork belly, skin on, ribs attached").
     """
     chunks: List[Dict[str, Any]] = []
 
@@ -84,6 +90,8 @@ def load_recipe_sources(paths: List[Path]) -> List[Dict[str, Any]]:
                 "source_file": str(path),
                 "chunk_id": i,
                 "title": recipe["title"],
+                "ingredients": recipe["ingredients"],
+                "instructions": recipe["instructions"],
                 "metadata": metadata,
             })
 

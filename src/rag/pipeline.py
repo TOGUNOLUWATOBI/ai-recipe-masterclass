@@ -84,16 +84,30 @@ def _point_id(source_file: str, chunk_id) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_OID, f"{source_file}::{chunk_id}"))
 
 
+# Bumped whenever _doc_from_chunk()'s payload shape changes in a way that requires
+# every existing point to be re-upserted (not just a text/model change) -- folded into
+# _chunk_hash() below so build_index()'s incremental diff treats every chunk as
+# "changed" exactly once after a payload-shape change, the same self-healing way a
+# missing/old-format manifest already triggers one full rebuild, instead of needing a
+# manual --rebuild flag. Bumped for Epic C's meal_ideas.py, which needs each recipe's
+# real ingredients/instructions lists in the payload (see recipe_loader.py) -- payload
+# alone isn't part of the embedding, so a payload-only change wouldn't otherwise be
+# detected by a hash of just the text + embedding model.
+_PAYLOAD_SCHEMA_VERSION = "v2-ingredients"
+
+
 def _chunk_hash(chunk: Dict[str, Any], embedding_model: str) -> str:
     """Per-chunk analogue of the old whole-corpus content hash: sha256 of just this
-    chunk's own text + the embedding model, so build_index() can tell exactly which
-    individual chunks changed instead of only knowing *that* something, somewhere in
-    the corpus, changed — the same "hash content + embedding model, not just a count"
-    principle as before (a count-only or single-combined-hash check would silently
-    keep serving stale embeddings for one edited recipe, or force a full re-embed of
-    everything for that same single edit), just scoped down to one chunk so only the
-    chunks that actually changed need re-embedding."""
+    chunk's own text + the embedding model + the payload schema version, so
+    build_index() can tell exactly which individual chunks changed instead of only
+    knowing *that* something, somewhere in the corpus, changed — the same "hash
+    content + embedding model, not just a count" principle as before (a count-only or
+    single-combined-hash check would silently keep serving stale embeddings for one
+    edited recipe, or force a full re-embed of everything for that same single edit),
+    just scoped down to one chunk so only the chunks that actually changed need
+    re-embedding."""
     hasher = hashlib.sha256()
+    hasher.update(_PAYLOAD_SCHEMA_VERSION.encode("utf-8"))
     hasher.update(embedding_model.encode("utf-8"))
     hasher.update(chunk["text"].encode("utf-8"))
     return hasher.hexdigest()
@@ -103,7 +117,11 @@ def _doc_from_chunk(chunk: Dict[str, Any], point_id: str, embedding) -> Dict[str
     """Builds the {id, embedding, text, metadata} shape QdrantVectorDB.index_documents()
     expects, keyed on the chunk's stable point_id rather than its position in whatever
     list it's being embedded from — the full corpus during a one-time migration/full
-    rebuild, or just the new/changed subset during an incremental update."""
+    rebuild, or just the new/changed subset during an incremental update.
+
+    metadata carries the recipe's real ingredients/instructions lists (Epic C) in
+    addition to the original title/source_file/chunk_id -- .get(..., []) defensively,
+    though every chunk from recipe_loader.py always has both."""
     return {
         "id": point_id,
         "embedding": embedding,
@@ -112,6 +130,8 @@ def _doc_from_chunk(chunk: Dict[str, Any], point_id: str, embedding) -> Dict[str
             "title": chunk["title"],
             "source_file": chunk["source_file"],
             "chunk_id": chunk["chunk_id"],
+            "ingredients": chunk.get("ingredients", []),
+            "instructions": chunk.get("instructions", []),
         },
     }
 

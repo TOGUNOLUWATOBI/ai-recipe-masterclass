@@ -40,6 +40,23 @@ def test_load_recipe_sources_preserves_extra_fields_as_metadata(tmp_path):
     assert chunks[0]["metadata"] == {"country": "Nigeria", "african_region": "West Africa"}
 
 
+def test_load_recipe_sources_preserves_structured_ingredients_and_instructions(tmp_path):
+    """Epic C's meal_ideas.py needs each recipe's real ingredient lines, not just the
+    comma-joined blob embedded in `text` -- see the module docstring for why
+    re-splitting that blob back apart would be lossy (ingredient lines routinely
+    contain their own internal commas)."""
+    path = tmp_path / "recipes.json"
+    path.write_text(json.dumps([
+        {"title": "Ribbe", "ingredients": ["4 lbs pork belly, skin on, ribs attached", "2 tbsp salt"],
+         "instructions": ["Score the skin.", "Roast."]},
+    ]))
+
+    chunks = load_recipe_sources([path])
+
+    assert chunks[0]["ingredients"] == ["4 lbs pork belly, skin on, ribs attached", "2 tbsp salt"]
+    assert chunks[0]["instructions"] == ["Score the skin.", "Roast."]
+
+
 def test_load_recipe_sources_disambiguates_same_basename_in_different_directories(tmp_path):
     # Regression test: pipeline.py derives a chunk's stable point ID from
     # (source_file, chunk_id), and chunk_id resets to 0 for every source file -- so

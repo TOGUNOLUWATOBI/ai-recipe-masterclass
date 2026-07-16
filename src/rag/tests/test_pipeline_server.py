@@ -20,7 +20,9 @@ pytest.importorskip("fastapi")
 from rag import pipeline_server  # noqa: E402
 from rag.pipeline_server import (  # noqa: E402
     IngredientsRequest,
+    MealIdeasFromCartRequest,
     QueryRequest,
+    meal_ideas_from_cart,
     query,
     query_stream,
     recipes_discounted,
@@ -310,3 +312,39 @@ def test_recipes_discounted_defaults_to_english_language(monkeypatch):
     recipes_discounted(max_results=10, include_recipes=True)
 
     assert seen["language"] == "en"
+
+
+def test_meal_ideas_request_defaults(monkeypatch):
+    req = MealIdeasFromCartRequest(discount_item_ids=["Kiwi::KYLLINGFILET"])
+
+    assert req.max_results == 5
+    assert req.language == "en"
+
+
+def test_meal_ideas_from_cart_reads_the_latest_snapshot_and_delegates(monkeypatch):
+    """The endpoint itself is a thin adapter -- fetch the current snapshot, hand it and
+    the request straight to meal_ideas.generate_meal_ideas_from_cart() (see
+    test_meal_ideas.py for that function's own behavior)."""
+    snapshot = [{"product_name": "KYLLINGFILET", "store_name": "Kiwi", "recipe_eligible": True}]
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: (snapshot, "2026-07-16T05:00:00Z"))
+
+    seen = {}
+
+    def fake_generate(pipeline, discounts, discount_item_ids, max_results=5, language="en"):
+        seen["discounts"] = discounts
+        seen["discount_item_ids"] = discount_item_ids
+        seen["max_results"] = max_results
+        seen["language"] = language
+        return {"ideas": [], "excluded_cart_items": []}
+
+    monkeypatch.setattr(pipeline_server, "generate_meal_ideas_from_cart", fake_generate)
+
+    result = meal_ideas_from_cart(
+        MealIdeasFromCartRequest(discount_item_ids=["Kiwi::KYLLINGFILET"], max_results=3, language="no")
+    )
+
+    assert seen["discounts"] == snapshot
+    assert seen["discount_item_ids"] == ["Kiwi::KYLLINGFILET"]
+    assert seen["max_results"] == 3
+    assert seen["language"] == "no"
+    assert result == {"ideas": [], "excluded_cart_items": []}

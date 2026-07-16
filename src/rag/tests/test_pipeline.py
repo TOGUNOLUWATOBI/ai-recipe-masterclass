@@ -9,6 +9,7 @@ from rag.pipeline import (
     SYSTEM_PROMPT,
     RecipeRAGPipeline,
     _chunk_hash,
+    _doc_from_chunk,
     _parse_recipe_sections,
     _point_id,
     _split_generated_recipes,
@@ -16,8 +17,31 @@ from rag.pipeline import (
 )
 
 
-def _chunk(text, source="a.json", chunk_id=0, title="Test"):
-    return {"text": text, "source_file": source, "chunk_id": chunk_id, "title": title}
+def _chunk(text, source="a.json", chunk_id=0, title="Test", ingredients=None, instructions=None):
+    return {
+        "text": text, "source_file": source, "chunk_id": chunk_id, "title": title,
+        "ingredients": ingredients or [], "instructions": instructions or [],
+    }
+
+
+def test_doc_from_chunk_carries_ingredients_and_instructions_in_the_payload():
+    """Epic C's meal_ideas.py reads a retrieved recipe's real ingredient list from
+    payload -- it must survive from the chunk into the indexed document."""
+    chunk = _chunk("### Test", ingredients=["egg", "flour"], instructions=["Mix.", "Bake."])
+
+    doc = _doc_from_chunk(chunk, "point-1", embedding=[0.1, 0.2])
+
+    assert doc["metadata"]["ingredients"] == ["egg", "flour"]
+    assert doc["metadata"]["instructions"] == ["Mix.", "Bake."]
+
+
+def test_doc_from_chunk_defaults_missing_ingredients_to_empty_list():
+    chunk = {"text": "### Test", "source_file": "a.json", "chunk_id": 0, "title": "Test"}
+
+    doc = _doc_from_chunk(chunk, "point-1", embedding=[0.1])
+
+    assert doc["metadata"]["ingredients"] == []
+    assert doc["metadata"]["instructions"] == []
 
 
 def test_point_id_is_deterministic():

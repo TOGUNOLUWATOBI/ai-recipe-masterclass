@@ -123,6 +123,14 @@ re-embeds the full ~20k-recipe corpus from scratch).
   `rag/grocery_discounts.py` for why real flyer heading text, not a category label, is
   what gets passed through). Response includes `updated_at` (when the cache was last
   refreshed). Always available — Tjek needs no API key
+- `POST /meal-ideas/from-cart` — Epic C: given a set of cart item ids (the same
+  `f"{store_name}::{product_name}"` keys the mobile app's cart already uses — see
+  `rag/meal_ideas.py`), resolves them against the cached discount snapshot, drops
+  anything not `recipe_eligible` (non-food, beverages, snacks, ready meals, ...), and
+  returns ranked, corpus-first meal ideas with deterministic ingredient-coverage
+  matching (`complete`/`nearly_complete`/`partial`) — falling back to LLM generation
+  only when retrieval finds nothing usable. Never forces every cart item into one dish;
+  each idea reports just the subset it actually uses
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from
