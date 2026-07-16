@@ -43,12 +43,13 @@ services:
       - LLM_API_STYLE=ollama
       - LLM_MODEL=toriko3:latest
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      # v2 discount flow — set via a .env file next to this compose file (e.g.
-      # ~/recipe-rag/.env with KASSALAPP_API_KEY=...), picked up automatically by
-      # docker compose. Defaults to empty, which /recipes/discounted treats as "not
-      # configured" rather than failing.
-      - KASSALAPP_API_KEY=${KASSALAPP_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8010:8000"  # cloudflared's ingress rule for recipe.bebs.dev points here
+    volumes:
+      # Persists the weekly discount-scan cache (SQLite, see discounts_store.py) across
+      # restarts — populated by a host cron job running `docker compose exec
+      # pipeline-service python -m rag.refresh_discounts`, read by /recipes/discounted.
+      # Without this the cache would be wiped on every redeploy.
+      - ./discounts_cache:/app/rag/discounts_cache

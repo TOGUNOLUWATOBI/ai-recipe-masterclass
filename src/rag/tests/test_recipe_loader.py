@@ -40,6 +40,45 @@ def test_load_recipe_sources_preserves_extra_fields_as_metadata(tmp_path):
     assert chunks[0]["metadata"] == {"country": "Nigeria", "african_region": "West Africa"}
 
 
+def test_load_recipe_sources_preserves_structured_ingredients_and_instructions(tmp_path):
+    """Epic C's meal_ideas.py needs each recipe's real ingredient lines, not just the
+    comma-joined blob embedded in `text` -- see the module docstring for why
+    re-splitting that blob back apart would be lossy (ingredient lines routinely
+    contain their own internal commas)."""
+    path = tmp_path / "recipes.json"
+    path.write_text(json.dumps([
+        {"title": "Ribbe", "ingredients": ["4 lbs pork belly, skin on, ribs attached", "2 tbsp salt"],
+         "instructions": ["Score the skin.", "Roast."]},
+    ]))
+
+    chunks = load_recipe_sources([path])
+
+    assert chunks[0]["ingredients"] == ["4 lbs pork belly, skin on, ribs attached", "2 tbsp salt"]
+    assert chunks[0]["instructions"] == ["Score the skin.", "Roast."]
+
+
+def test_load_recipe_sources_disambiguates_same_basename_in_different_directories(tmp_path):
+    # Regression test: pipeline.py derives a chunk's stable point ID from
+    # (source_file, chunk_id), and chunk_id resets to 0 for every source file -- so
+    # if source_file were ever just the bare basename, two files sharing a filename in
+    # different directories would produce colliding point IDs and silently drop one
+    # recipe on upsert (Qdrant last-write-wins for duplicate IDs in one batch).
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    path_a = dir_a / "recipes.json"
+    path_b = dir_b / "recipes.json"
+    path_a.write_text(json.dumps([{"title": "Recipe A", "ingredients": ["x"], "instructions": ["Cook."]}]))
+    path_b.write_text(json.dumps([{"title": "Recipe B", "ingredients": ["y"], "instructions": ["Cook."]}]))
+
+    chunks = load_recipe_sources([path_a, path_b])
+
+    assert len(chunks) == 2
+    assert chunks[0]["chunk_id"] == chunks[1]["chunk_id"] == 0  # same bare filename, same chunk_id
+    assert chunks[0]["source_file"] != chunks[1]["source_file"]  # but distinguishable by full path
+
+
 def test_dedupe_exact_removes_byte_identical_duplicates():
     chunks = [
         {"text": "### Carrot Cake\n\nA", "source_file": "a.json", "chunk_id": 0},

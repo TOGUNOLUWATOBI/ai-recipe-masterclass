@@ -50,7 +50,13 @@ def load_recipe_sources(paths: List[Path]) -> List[Dict[str, Any]]:
       - instructions: list[str]
     Any extra fields (country, african_region, etc.) are preserved under 'metadata'.
 
-    Returns chunk dicts with: text, char_len, source_file, chunk_id, title.
+    Returns chunk dicts with: text, char_len, source_file, chunk_id, title, ingredients,
+    instructions. ingredients/instructions are kept as the original structured lists
+    (not just flattened into `text`) so downstream consumers -- meal_ideas.py's
+    ingredient-coverage matching (Epic C4) -- can work against real per-recipe
+    ingredient lines instead of re-parsing a comma-joined blob back apart, which is
+    lossy (individual ingredient lines routinely contain their own internal commas,
+    e.g. "4 lbs (1.8 kg) pork belly, skin on, ribs attached").
     """
     chunks: List[Dict[str, Any]] = []
 
@@ -76,9 +82,16 @@ def load_recipe_sources(paths: List[Path]) -> List[Dict[str, Any]]:
             chunks.append({
                 "text": text,
                 "char_len": len(text),
-                "source_file": path.name,
+                # Full path, not just the basename -- this is the uniqueness half of
+                # pipeline.py's stable point-ID derivation (source_file + chunk_id),
+                # and chunk_id only resets to 0 per-file, so two files sharing a bare
+                # filename in different directories would otherwise collide on the
+                # same point ID and silently drop one recipe from the index.
+                "source_file": str(path),
                 "chunk_id": i,
                 "title": recipe["title"],
+                "ingredients": recipe["ingredients"],
+                "instructions": recipe["instructions"],
                 "metadata": metadata,
             })
 
@@ -112,7 +125,10 @@ def print_recipe_statistics(chunks: List[Dict[str, Any]]) -> None:
         return
 
     total_chars = sum(c["char_len"] for c in chunks)
-    sources = sorted(set(c["source_file"] for c in chunks))
+    # Display just the basenames -- source_file itself is the full path (needed for
+    # point-ID uniqueness, see load_recipe_sources()), which would make this summary
+    # noisy since every entry shares the same directory prefix.
+    sources = sorted({Path(c["source_file"]).name for c in chunks})
 
     print("\n" + "=" * 80)
     print("RECIPE CHUNK STATISTICS")

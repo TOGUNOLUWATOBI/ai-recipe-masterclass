@@ -15,11 +15,13 @@ from contextlib import asynccontextmanager
 from typing import List, Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import RecipeRAGConfig
-from .grocery_discounts import KassalappClient, find_discounted_ingredients
+from .discounts_store import get_latest_snapshot
+from .meal_ideas import generate_meal_ideas_from_cart
 from .pipeline import RecipeRAGPipeline
 
 logging.basicConfig(level=logging.INFO)
@@ -29,10 +31,6 @@ RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")
 
 config = RecipeRAGConfig()
 pipeline = RecipeRAGPipeline(config)
-# Lazily constructed only if KASSALAPP_API_KEY is set — grocery_discounts.py is unused
-# dead weight (no extra dependency, just an unused client) until the v2 discount flow
-# has a real key to work with.
-kassalapp_client = KassalappClient(config.KASSALAPP_API_KEY, config.KASSALAPP_BASE_URL) if config.KASSALAPP_API_KEY else None
 
 
 @asynccontextmanager
@@ -44,21 +42,38 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="recipe-rag-pipeline", lifespan=lifespan)
 
+# Permissive by design: this API has no auth, sessions, or cookies (no CSRF-style risk
+# CORS restrictions would otherwise guard against), and every endpoint here is already
+# reachable by anyone via curl/any HTTP client — CORS only blocks browser JS specifically,
+# so restricting it would block legitimate web/mobile-web clients while doing nothing to
+# stop the same request made a different way. Needed for the React Native app's web
+# preview (Expo web) and any future browser-based client.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
 
 class QueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = None
+    # "no" only affects the LLM-synthesized answer text itself -- language is not
+    # applied to retrieval/grounding, which stays keyed on the English corpus/reranker
+    # regardless (see pipeline.py's _translate_answer()).
+    language: str = "en"
 
 
 @app.post("/query")
 def query(req: QueryRequest):
-    return pipeline.run_query(req.question, top_k=req.top_k)
+    return pipeline.run_query(req.question, top_k=req.top_k, language=req.language)
 
 
 @app.post("/query/stream")
 def query_stream(req: QueryRequest):
     def event_gen():
-        for event in pipeline.run_query_stream(req.question, top_k=req.top_k):
+        for event in pipeline.run_query_stream(req.question, top_k=req.top_k, language=req.language):
             yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -68,6 +83,19 @@ def query_stream(req: QueryRequest):
 class IngredientsRequest(BaseModel):
     ingredients: List[str]
     max_results: Optional[int] = 10
+    # True only when every ingredient is a real Tjek grocery-flyer product name (e.g.
+    # sent by DealDetailScreen in the mobile app) -- routes to
+    # normalize_grocery_heading() via pipeline.find_recipes_or_generate()'s normalize
+    # param. Must stay False (the default) for arbitrary user-typed free text (e.g.
+    # IngredientsScreen): an adversarial review confirmed normalize_grocery_heading()
+    # corrupts real English phrases (e.g. "extra virgin olive oil" -> "virgin olive
+    # oil"), since its glossary/noise-token suffix matching was only validated against
+    # real Norwegian Tjek headings, never English vocabulary.
+    is_grocery_product: bool = False
+    # "no" translates every returned recipe's title/text (both source="corpus" and
+    # source="generated") via a dedicated translation model -- see
+    # pipeline.find_recipes_or_generate()'s _translate_recipes().
+    language: str = "en"
 
 
 @app.post("/recipes/from-ingredients")
@@ -77,7 +105,9 @@ def recipes_from_ingredients(req: IngredientsRequest):
     when the corpus has nothing (e.g. an obscure dish/cuisine not covered). Foundation
     for the v2 discount-driven recipe flow — feed it currently discounted ingredients,
     get back candidates to choose from instead of one generated answer."""
-    result = pipeline.find_recipes_or_generate(req.ingredients, max_results=req.max_results)
+    result = pipeline.find_recipes_or_generate(
+        req.ingredients, max_results=req.max_results, normalize=req.is_grocery_product, language=req.language,
+    )
     return {
         "ingredients": req.ingredients,
         "source": result["source"],
@@ -89,40 +119,69 @@ def recipes_from_ingredients(req: IngredientsRequest):
 
 
 @app.get("/recipes/discounted")
-def recipes_discounted(max_results: int = 10, discount_threshold_pct: Optional[float] = None):
-    """v2 discount-driven recipe flow: pulls current Kassalapp discounts on tracked
-    ingredients, then feeds whichever ones are actually on sale into the same
+def recipes_discounted(max_results: int = 10, include_recipes: bool = True, language: str = "en"):
+    """v2 discount-driven recipe flow: reads the latest cached Tjek (etilbudsavis.dk)
+    flyer-offer scan (see discounts_store.py — populated by a cron-triggered
+    refresh_discounts.py, not a live call on every request) and, unless
+    include_recipes=false, feeds whichever products are currently on offer into the same
     find_recipes_or_generate() used by /recipes/from-ingredients — same corpus-first,
-    LLM-fallback behavior, just with the ingredient list sourced from real grocery
-    prices instead of a user-supplied list."""
-    if kassalapp_client is None:
+    LLM-fallback behavior, just with the ingredient list sourced from real grocery flyer
+    prices instead of a user-supplied list.
+
+    include_recipes=false skips that generation pass entirely and returns just the
+    discount list (fast — no LLM call). Built for a deals-browsing UI that needs the
+    price/store/image list immediately and only wants a recipe for the one item a user
+    actually taps, fetched on demand via /recipes/from-ingredients instead."""
+    discounts, updated_at = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+
+    if not discounts or not include_recipes:
         return {
-            "error": "KASSALAPP_API_KEY not configured",
-            "discounted_ingredients": [], "source": None, "count": 0, "recipes": [], "generated": None,
+            "discounted_ingredients": discounts, "source": None, "count": 0, "recipes": [],
+            "generated": None, "error": None, "updated_at": updated_at,
         }
 
-    threshold = discount_threshold_pct if discount_threshold_pct is not None else config.DISCOUNT_THRESHOLD_PCT
-    discounts = find_discounted_ingredients(
-        kassalapp_client, threshold_pct=threshold, history_days=config.DISCOUNT_PRICE_HISTORY_DAYS,
+    # Uses the real discovered product_name (Norwegian, as returned directly by Tjek's
+    # own flyer heading) as the query text — confirmed live that the fine-tuned model
+    # handles this well: "Kjøttdeig Storfe 14%..." correctly became a "Kjøttballer"
+    # (meatballs) recipe. Since the real flyer product name is shown to the user either
+    # way, there's no deception even on an unusual heading; the source data itself is a
+    # real, officially-published offer, not an inferred or fuzzy match.
+    #
+    # Only recipe_eligible items go into the recipe query (Epic A) — non-food (soap,
+    # batteries, ...), beverages, snacks/treats, and ready meals/ready-to-eat products
+    # (frozen pizza, ready-made lasagne, chocolate, Coca-Cola, ...) are still returned
+    # in discounted_ingredients below for the app's own tabs/menus, but none of them
+    # make for a sensible recipe ingredient (see product_classification.py). This
+    # replaces the old `category == "main_food"` gate, which had no way to tell a
+    # frozen pizza or a chocolate bar apart from a real ingredient — both used to slip
+    # through as "main_food" since neither matched the old keyword-only non-food/snack
+    # checks.
+    #
+    # Rows written before Epic A existed have recipe_eligible=False (see
+    # discounts_store.get_latest_snapshot()) until the next scan reclassifies them, so
+    # they're excluded here rather than wrongly treated as eligible.
+    #
+    # Capped at 30 after that filter — the discount scan now returns every product per
+    # store (up to ~1400 across all stores), not just discounted ones, and joining all
+    # of that into one retrieval query (find_recipes_from_ingredients joins the whole
+    # list into a single comma-separated string) would dilute the query into noise
+    # rather than actually cost more. discounts is already sorted with confirmed
+    # discounts first, so this naturally keeps the real deals.
+    eligible = [d for d in discounts if d.get("recipe_eligible")]
+    product_names = [d["product_name"] for d in eligible[:30]]
+
+    if not product_names:
+        return {
+            "discounted_ingredients": discounts, "source": None, "count": 0, "recipes": [],
+            "generated": None, "error": None, "updated_at": updated_at,
+        }
+
+    # Always normalize=True here, unconditionally, with no request-side flag needed --
+    # unlike /recipes/from-ingredients, this list is always sourced from the real Tjek
+    # discounts snapshot (see get_latest_snapshot() above), never arbitrary user input.
+    result = pipeline.find_recipes_or_generate(
+        product_names, max_results=max_results, normalize=True, language=language,
     )
-
-    if not discounts:
-        return {
-            "discounted_ingredients": [], "source": None, "count": 0, "recipes": [], "generated": None, "error": None,
-        }
-
-    # Uses the real discovered product_name (Norwegian, as returned by Kassalapp), not
-    # ingredient_en — confirmed live that the fine-tuned model handles this well:
-    # "Kjøttdeig Storfe 14%..." correctly became a "Kjøttballer" (meatballs) recipe,
-    # and even a mismatched category result ("Skinke Kokt"/ham, wrongly surfaced by an
-    # "eggs" search) was correctly identified as ham, not confused for eggs — no
-    # hallucination, just an honest result for what the product actually is. Since the
-    # real product name is shown to the user either way, there's no deception even when
-    # a category search occasionally surfaces an imperfect match; the alternative
-    # (perfectly ranking candidates to guarantee ingredient_en accuracy) turned out to
-    # be a much harder problem for no real gain in honesty.
-    product_names = [d["product_name"] for d in discounts]
-    result = pipeline.find_recipes_or_generate(product_names, max_results=max_results)
     return {
         "discounted_ingredients": discounts,
         "source": result["source"],
@@ -130,7 +189,33 @@ def recipes_discounted(max_results: int = 10, discount_threshold_pct: Optional[f
         "recipes": result["recipes"],
         "generated": result["generated"],
         "error": result["error"],
+        "updated_at": updated_at,
     }
+
+
+class MealIdeasFromCartRequest(BaseModel):
+    discount_item_ids: List[str]
+    max_results: Optional[int] = 5
+    language: str = "en"
+
+
+@app.post("/meal-ideas/from-cart")
+def meal_ideas_from_cart(req: MealIdeasFromCartRequest):
+    """Epic C: generates practical meal ideas from a set of cart items, identified by
+    the same `f"{store_name}::{product_name}"` ids the mobile cart already uses (see
+    mobile-app/src/types/cart.ts's cartItemIdFor() and meal_ideas.py's
+    _discount_item_id() -- kept in sync by convention, not a shared runtime value,
+    since there's no real per-offer id yet).
+
+    Ids are resolved against the latest cached discount snapshot server-side and
+    independently re-checked for recipe eligibility -- the request never trusts
+    whatever classification the client might send, only the id itself (see
+    meal_ideas.generate_meal_ideas_from_cart() for the full pipeline: resolve -> filter
+    -> normalize -> retrieve-or-generate -> score coverage -> rank)."""
+    discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    return generate_meal_ideas_from_cart(
+        pipeline, discounts, req.discount_item_ids, max_results=req.max_results, language=req.language,
+    )
 
 
 @app.get("/health")

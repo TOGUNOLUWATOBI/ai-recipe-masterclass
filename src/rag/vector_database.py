@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, PointStruct, VectorParams
+from qdrant_client.http.models import Distance, PointIdsList, PointStruct, VectorParams
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,18 @@ class QdrantVectorDB:
             {"id": r.id, "score": r.score, "payload": r.payload, "text": r.payload.get("text", "")}
             for r in results
         ]
+
+    def delete_points(self, ids: List[str]) -> None:
+        """Removes specific points by id — the counterpart to index_documents() for
+        incremental updates: pipeline.py's build_index() calls this for chunks that
+        were present in the previous manifest but are no longer in the freshly loaded
+        corpus (e.g. a recipe removed from a source file), so their stale vectors
+        don't linger in the collection forever."""
+        if not ids:
+            return
+        name = self.config.VECTOR_DB_COLLECTION
+        self.client.delete(collection_name=name, points_selector=PointIdsList(points=ids))
+        logger.info(f"Deleted {len(ids)} point(s) from '{name}'")
 
     def count_documents(self) -> int:
         try:

@@ -62,12 +62,16 @@ src/
     retrieval_server.py          FastAPI app for rag-service
     pipeline_server.py           FastAPI app for pipeline-service
     retrieval_client.py          HTTP client pipeline-service uses to reach rag-service
+    grocery_discounts.py         Tjek client + flyer-offer discount logic (v2)
+    discounts_store.py           SQLite cache /recipes/discounted reads from
+    refresh_discounts.py         cron entrypoint that populates the cache above
     cli.py                       interactive CLI for local development
     run_eval.py                  retrieval regression suite (eval_set.json)
     tests/                       unit tests (pytest)
     Dockerfile.retrieval         rag-service image
     Dockerfile.pipeline          pipeline-service image
   docker-compose.yml            full production stack (qdrant + rag-service + pipeline-service)
+mobile-app/                     React Native (Expo) client — see mobile-app/README.md
 ```
 
 ## Running locally
@@ -112,15 +116,50 @@ re-embeds the full ~20k-recipe corpus from scratch).
 - `POST /recipes/from-ingredients` — given a list of ingredients, returns up to
   `max_results` matching corpus recipes, or several LLM-generated suggestions if nothing
   in the corpus matches
-- `GET /recipes/discounted` — v2: pulls current Kassalapp grocery discounts on tracked
-  ingredients, feeds the real discovered product names into the same corpus-first/
-  LLM-fallback logic as `/recipes/from-ingredients` (see `rag/grocery_discounts.py` for
-  why product names, not the originally-intended ingredient label, are what get passed
-  through). Returns `{"error": "KASSALAPP_API_KEY not configured"}` until a key is set
+- `GET /recipes/discounted` — v2: reads the cached Tjek (etilbudsavis.dk) flyer-offer
+  scan (see "Grocery discount caching" below — not a live Tjek call per request) and,
+  unless `include_recipes=false`, feeds the discovered product names into the same
+  corpus-first/LLM-fallback logic as `/recipes/from-ingredients` (see
+  `rag/grocery_discounts.py` for why real flyer heading text, not a category label, is
+  what gets passed through). Response includes `updated_at` (when the cache was last
+  refreshed). Always available — Tjek needs no API key
+- `POST /meal-ideas/from-cart` — Epic C: given a set of cart item ids (the same
+  `f"{store_name}::{product_name}"` keys the mobile app's cart already uses — see
+  `rag/meal_ideas.py`), resolves them against the cached discount snapshot, drops
+  anything not `recipe_eligible` (non-food, beverages, snacks, ready meals, ...), and
+  returns ranked, corpus-first meal ideas with deterministic ingredient-coverage
+  matching (`complete`/`nearly_complete`/`partial`) — falling back to LLM generation
+  only when retrieval finds nothing usable. Never forces every cart item into one dish;
+  each idea reports just the subset it actually uses
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from
 `pipeline-service` over the internal Docker network.
+
+## Grocery discount caching
+
+Tjek's (api.etilbudsavis.dk) underlying flyer offers refresh roughly weekly (like any
+Norwegian "kundeavis"), not per-request, and there's no webhook to react to when they
+change. Scanning live on every `/recipes/discounted` hit would just be needless load for
+data that's already stale by the next request — even though no rate limiting was
+observed against Tjek's public API (unlike the old Kassalapp design), there's still no
+reason to re-fetch ~700 offers across 11 stores on every request.
+
+Instead, `rag/discounts_store.py` is a small SQLite cache (one table, replaced wholesale
+on each scan — see the module docstring for why a plain relational table beats a JSON
+blob here) that `pipeline_server.py` only ever reads from. The only writer is
+`rag/refresh_discounts.py`, triggered by a host cron job:
+
+```
+0 5 * * * cd ~/recipe-rag && docker compose exec -T pipeline-service python -m rag.refresh_discounts >> ~/recipe-rag/discount-refresh.log 2>&1
+```
+
+Runs daily rather than trying to guess which day each chain refreshes its own offers
+(varies by chain) — cheap enough to run that often (one scan takes well under a minute).
+The cache lives in a bind-mounted volume (`./discounts_cache` in `docker-compose.yml`) so
+it survives container rebuilds/redeploys. Deliberately **not** exposed as a public HTTP
+endpoint to trigger on demand — refreshing is cron/SSH-only, keeping the sweep pattern
+predictable regardless of how permissive Tjek's API happens to be.
 
 ## Status
 
@@ -128,14 +167,26 @@ re-embeds the full ~20k-recipe corpus from scratch).
 - ✅ 20,217-recipe corpus (food.com + Kaggle + Indian dataset + curated African +
   Scandinavian recipes), full retrieval regression suite passing
 - ✅ v2 discount-driven recipe generation — live at `recipe.bebs.dev/recipes/discounted`.
-  Product lookup is category-scoped against Kassalapp's ~2,000-category taxonomy
-  (free-text search alone surfaced baby food for common terms like "kylling"/chicken —
-  see `grocery_discounts.py` for the full story). Rather than perfectly disambiguating
-  every tracked ingredient to its exact intended product, the pipeline passes whatever
-  real product a category search finds straight to the LLM and trusts it to interpret
-  correctly — confirmed live that this works well (a mismatched "ham" result under an
-  "eggs" search still produced a correct ham suggestion, never a hallucinated egg dish).
-  Run `python -m rag.grocery_discounts` to sanity-check current lookups against the
-  live API.
+  Sweeps a hand-verified list of 11 Norwegian dealer IDs (`NORWEGIAN_STORES` in
+  `grocery_discounts.py`, sourced from and cross-checked against
+  github.com/olgasafonova/tilbudstrolden-mcp — Tjek's own `/dealers` endpoint can't
+  enumerate Norwegian stores itself) against Tjek's (api.etilbudsavis.dk) public flyer
+  API, no API key required. Every current offer per store is returned, not just
+  discounted ones — each item's `discount_pct`/`reference_price` is filled in only when
+  the retailer published a real `pre_price` higher than the current price, a genuine
+  official discount straight from the flyer, never inferred from price history. There's
+  no category grouping anymore — a short non-food keyword filter
+  (`NON_FOOD_KEYWORDS`) excludes the handful of non-groceries real flyers mix in
+  (sunscreen, batteries, toilet paper, ...) instead, since the flyer heading itself is
+  already a real, specific product name. The pipeline passes that heading straight to
+  the LLM and trusts it to interpret correctly — confirmed live that this works well
+  (e.g. "Kjøttdeig Storfe 14%..." correctly became a "Kjøttballer" suggestion). Run
+  `python -m rag.grocery_discounts` to sanity-check current lookups against the live API.
+- ✅ Discount scan is cached (SQLite) and refreshed daily via cron, not scanned live per
+  request — see "Grocery discount caching" above. Captures store name/logo and product
+  image per discount, not just price, for the mobile app's Mattilbud-style deal cards.
+- ✅ React Native mobile app (`mobile-app/`) — Tilbud (deals, grouped by store) as the
+  home tab, plus Ask and Ingredients. Tapping a deal generates a recipe for that one
+  product on demand rather than generating for the whole list up front.
 - ⏳ v2 reverse ingredient-sourcing (given a recipe, find where to buy ingredients
   cheapest) — not yet built

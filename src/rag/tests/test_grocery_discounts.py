@@ -1,10 +1,7 @@
-"""Tests for grocery_discounts.py's pure logic and client wiring, using mocked HTTP
-responses — no real Kassalapp API key needed. The response shapes and category names
-mocked here match what a live call actually returned (verified 2026-07-06), not just
-Kassalapp's documentation — see the module docstring for what was only caught this way:
-nested price_history instead of a flat price field, free-text search being unreliable
-for this domain (baby food/deli noise), and the category taxonomy that fixes it for
-most tracked ingredients."""
+"""Tests for grocery_discounts.py's Tjek client and pure logic, using mocked HTTP
+responses -- no network access needed. Response shapes mocked here match what a live
+call to api.etilbudsavis.dk actually returned (verified 2026-07-08), not just assumed
+from documentation."""
 
 from unittest.mock import MagicMock, patch
 
@@ -12,185 +9,32 @@ import pytest
 import requests
 
 from rag.grocery_discounts import (
-    KassalappClient,
-    _extract_reference_price,
-    _is_baby_food,
-    _name_matches_term,
-    _percent_below,
-    _select_representative_product,
-    find_discounted_ingredients,
-    get_norwegian_term,
+    BEVERAGE_KEYWORDS,
+    NON_FOOD_KEYWORDS,
+    NORWEGIAN_STORES,
+    READY_MEAL_KEYWORDS,
+    READY_TO_EAT_KEYWORDS,
+    SNACK_KEYWORDS,
+    TjekClient,
+    _compute_unit_price,
+    _is_beverage,
+    _is_non_food,
+    _is_ready_meal,
+    _is_ready_to_eat,
+    _is_snack,
+    classify_product,
+    find_discounted_products,
 )
 
 
 @pytest.fixture(autouse=True)
 def no_real_sleep():
-    """find_discounted_ingredients() paces real Kassalapp calls with time.sleep(0.3) to
-    avoid rate limiting — harmless in production, but would needlessly slow down every
-    test in this file (mocked calls don't need pacing) without this patched out."""
     with patch("rag.grocery_discounts.time.sleep"):
         yield
 
 
-_STUB_TRANSLATIONS = {"chicken": "kylling", "salmon": "laks", "garlic": "hvitløk"}
-
-
-@pytest.fixture(autouse=True)
-def stub_translation():
-    """find_discounted_ingredients() now calls get_norwegian_term() for every
-    ingredient (even category-based ones, to disambiguate within the category — see the
-    module docstring), so it must not hit the real translation API from these tests.
-    Doesn't affect the two tests that exercise get_norwegian_term() directly — they
-    import the real function by name, unaffected by patching the module's attribute."""
-    with patch("rag.grocery_discounts.get_norwegian_term", side_effect=lambda en: _STUB_TRANSLATIONS[en]):
-        yield
-
-
-def test_percent_below_computes_discount_correctly():
-    assert _percent_below(current=80, reference=100) == 20.0
-
-
-def test_percent_below_returns_zero_for_price_increase():
-    assert _percent_below(current=120, reference=100) == 0.0
-
-
-def test_percent_below_handles_zero_reference_without_dividing_by_zero():
-    assert _percent_below(current=50, reference=0) == 0.0
-
-
-def test_extract_reference_price_averages_price_history():
-    """Real shape confirmed via a live call: data[].price_history[] is a full list of
-    daily {price, date, store} entries, not a single pre-aggregated value."""
-    response = {
-        "data": [
-            {"ean": "123", "price_history": [{"price": 40.0}, {"price": 50.0}]},
-            {"ean": "456", "price_history": [{"price": 10.0}]},
-        ]
-    }
-    assert _extract_reference_price(response, "123") == 45.0
-
-
-def test_extract_reference_price_returns_none_when_ean_not_found():
-    response = {"data": [{"ean": "999", "price_history": [{"price": 45.5}]}]}
-    assert _extract_reference_price(response, "123") is None
-
-
-def test_extract_reference_price_returns_none_for_empty_history():
-    response = {"data": [{"ean": "123", "price_history": []}]}
-    assert _extract_reference_price(response, "123") is None
-
-
-def test_extract_reference_price_degrades_gracefully_on_unexpected_shape():
-    """Regression guard: an unexpected response shape (e.g. Kassalapp changing their
-    API) should degrade to "no data" rather than crash the whole discount scan."""
-    assert _extract_reference_price({"totally": "different shape"}, "123") is None
-    assert _extract_reference_price({"data": "not a list"}, "123") is None
-
-
-def test_is_baby_food_detects_tagged_category():
-    product = {"name": "Anything", "category": [{"name": "Barnemat"}]}
-    assert _is_baby_food(product) is True
-
-
-def test_is_baby_food_detects_untagged_age_naming_convention():
-    """Regression test for a real finding: one live baby-food result had an EMPTY
-    category list despite obviously being baby food by its "6mnd" (6 months) naming —
-    category alone would have missed it."""
-    product = {"name": "Kyllinggryte Økologisk 6mnd 190g Hipp", "category": []}
-    assert _is_baby_food(product) is True
-
-
-def test_is_baby_food_false_for_ordinary_product():
-    product = {"name": "Kyllingfilet 500g", "category": [{"name": "Kjøtt"}]}
-    assert _is_baby_food(product) is False
-
-
-def test_is_baby_food_detects_brand_field_mention():
-    """Regression test for a real finding: one live baby-food product (brand
-    "Alex&Phil") had neither a matching category nor the "Nmnd" naming pattern, but the
-    brand field itself said "Alex&phil barnemat" — checking category and name alone
-    would have missed this one too."""
-    product = {"name": "Kylling&Eple Måltid Økologisk 180g Alex&Phil", "category": [], "brand": "Alex&phil barnemat"}
-    assert _is_baby_food(product) is True
-
-
-def test_name_matches_term_matches_compound_word_prefix():
-    """"kyllingfilet" is one word (no space) that starts with "kylling" — must still
-    match, this is the common case for raw-meat product naming."""
-    assert _name_matches_term("Kyllingfilet 500g", "kylling") is True
-
-
-def test_name_matches_term_matches_brand_first_naming():
-    """Regression test for a real finding: "eggs" translates correctly to "egg", but
-    the actual product is named "Prior Egg 12stk" (brand first) — a plain
-    whole-string .startswith() check would miss this since the string starts with the
-    brand, not the ingredient. Checking each word's prefix instead of the whole
-    string's catches it via the second word."""
-    assert _name_matches_term("Prior Egg 12stk", "egg") is True
-
-
-def test_name_matches_term_rejects_cross_word_substring_match():
-    """Regression guard for the original bug this whole heuristic exists to prevent:
-    "løk" (onion) must not match "Hvitløk" (garlic, a different vegetable) just
-    because "løk" is a substring of it — "hvitløk" doesn't START with "løk", so no
-    word matches."""
-    assert _name_matches_term("Hvitløkspate 180g Finsbråten", "løk") is False
-
-
-def test_select_representative_product_prefers_name_starting_with_search_term():
-    """Regression test for a real finding: Kassalapp's top search hit for "kylling"
-    (chicken) was baby food containing chicken as one ingredient among several, not
-    chicken itself. A product whose name actually starts with the search term is a much
-    better proxy for "this is the ingredient," not just "mentions it.\""""
-    products = [
-        {"name": "Couscous Kylling 8mnd 190g Nestle", "ean": "1", "current_price": 20.0},
-        {"name": "Kyllingfilet 500g", "ean": "2", "current_price": 80.0},
-    ]
-    assert _select_representative_product(products, "kylling")["name"] == "Kyllingfilet 500g"
-
-
-def test_select_representative_product_matches_brand_first_naming():
-    """Regression test for the real "eggs" finding: within the "Egg" category, the
-    representative product was named "Prior Egg 12stk" — brand first — and the old
-    whole-string-prefix heuristic fell through to an unrelated first result instead."""
-    products = [
-        {"name": "Skinke Kokt 150g Folkets", "ean": "1", "current_price": 40.0},
-        {"name": "Prior Egg 12stk", "ean": "2", "current_price": 45.0},
-    ]
-    assert _select_representative_product(products, "egg")["name"] == "Prior Egg 12stk"
-
-
-def test_select_representative_product_excludes_baby_food_even_if_name_matches():
-    """Regression test for a real finding: "Kyllinggryte...6mnd...Hipp" (a baby food
-    chicken stew) also starts with "kylling" and would have wrongly passed the plain
-    startswith heuristic — baby-food exclusion must run first."""
-    products = [
-        {"name": "Kyllinggryte Økologisk 6mnd 190g Hipp", "category": [], "ean": "1", "current_price": 30.0},
-        {"name": "Kyllingfilet 500g", "category": [{"name": "Kjøtt"}], "ean": "2", "current_price": 80.0},
-    ]
-    assert _select_representative_product(products, "kylling")["name"] == "Kyllingfilet 500g"
-
-
-def test_select_representative_product_falls_back_to_baby_food_if_nothing_else_matches():
-    """If literally every result is baby food (confirmed live: all 10 results for
-    "kylling" on one free-text search were), still return something rather than
-    nothing — a slightly-off signal beats no signal at all for a discount scan."""
-    products = [{"name": "Couscous Kylling 8mnd 190g Nestle", "category": [], "ean": "1", "current_price": 20.0}]
-    assert _select_representative_product(products, "kylling") == products[0]
-
-
-def test_select_representative_product_falls_back_to_first_result():
-    products = [{"name": "Couscous Kylling 8mnd 190g Nestle", "ean": "1", "current_price": 20.0}]
-    assert _select_representative_product(products, "kylling") == products[0]
-
-
-def test_select_representative_product_handles_empty_list():
-    assert _select_representative_product([], "kylling") is None
-
-
-def test_select_representative_product_returns_none_when_nothing_has_a_usable_price():
-    products = [{"name": "Kyllingfilet 500g"}]  # no ean, no current_price
-    assert _select_representative_product(products, "kylling") is None
+def test_norwegian_stores_has_no_duplicate_dealer_ids():
+    assert len(NORWEGIAN_STORES) == len(set(NORWEGIAN_STORES.values()))
 
 
 class _FakeResponse:
@@ -206,170 +50,435 @@ class _FakeResponse:
         return self._json
 
 
-def test_kassalapp_client_search_products_by_category():
-    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+def test_tjek_client_get_store_offers_calls_expected_url_and_params():
+    client = TjekClient()
 
     with patch("rag.grocery_discounts.requests.get") as mock_get:
-        mock_get.return_value = _FakeResponse({"data": [{"name": "Kyllingfilet", "ean": "1"}]})
-        result = client.search_products(category="Kylling", size=20)
+        mock_get.return_value = _FakeResponse([{"heading": "TEST"}])
+        result = client.get_store_offers("257bxm", limit=50)
 
-    assert result == [{"name": "Kyllingfilet", "ean": "1"}]
-    call_kwargs = mock_get.call_args.kwargs
-    assert call_kwargs["headers"]["Authorization"] == "Bearer test-key"
-    assert call_kwargs["params"] == {"size": 20, "category": "Kylling"}
+    assert result == [{"heading": "TEST"}]
+    call_args = mock_get.call_args
+    assert call_args.args[0] == "https://api.etilbudsavis.dk/v2/offers"
+    assert call_args.kwargs["params"] == {"dealer_id": "257bxm", "limit": 50}
+    assert "User-Agent" in call_args.kwargs["headers"]
 
 
-def test_kassalapp_client_search_products_by_free_text():
-    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
+def test_tjek_client_raises_on_http_error():
+    client = TjekClient()
 
     with patch("rag.grocery_discounts.requests.get") as mock_get:
-        mock_get.return_value = _FakeResponse({"data": [{"name": "Tine Melk", "ean": "1"}]})
-        result = client.search_products(search="melk", size=3)
-
-    assert result == [{"name": "Tine Melk", "ean": "1"}]
-    call_kwargs = mock_get.call_args.kwargs
-    assert call_kwargs["params"] == {"size": 3, "search": "melk"}
+        mock_get.return_value = _FakeResponse({}, status=500)
+        with pytest.raises(requests.HTTPError):
+            client.get_store_offers("257bxm")
 
 
-def test_kassalapp_client_get_price_history_bulk_posts_expected_payload():
-    client = KassalappClient(api_key="test-key", base_url="https://kassal.app/api/v1")
-
-    with patch("rag.grocery_discounts.requests.post") as mock_post:
-        mock_post.return_value = _FakeResponse({"data": []})
-        client.get_price_history_bulk(["111", "222"], days=14, aggregation="min")
-
-    call_kwargs = mock_post.call_args.kwargs
-    assert call_kwargs["json"] == {"eans": ["111", "222"], "days": 14, "aggregation": "min"}
+def test_compute_unit_price_converts_grams_to_kg():
+    quantity = {"unit": {"symbol": "g"}, "size": {"from": 500}}
+    assert _compute_unit_price(50.0, quantity) == (100.0, "kg")
 
 
-def _price_history_response(ean, price):
-    history = [{"price": price}] if price is not None else []
-    return {"data": [{"ean": ean, "price_history": history}]}
+def test_compute_unit_price_converts_ml_to_liter():
+    quantity = {"unit": {"symbol": "ml"}, "size": {"from": 250}}
+    assert _compute_unit_price(25.0, quantity) == (100.0, "L")
 
 
-def test_find_discounted_ingredients_uses_category_lookup_when_available():
-    tracked = [{"en": "chicken", "category": "Kylling"}]
+def test_compute_unit_price_handles_kg_directly():
+    quantity = {"unit": {"symbol": "kg"}, "size": {"from": 2}}
+    assert _compute_unit_price(100.0, quantity) == (50.0, "kg")
+
+
+def test_compute_unit_price_handles_liter_directly_lowercase_and_uppercase():
+    lowercase = {"unit": {"symbol": "l"}, "size": {"from": 2}}
+    uppercase = {"unit": {"symbol": "L"}, "size": {"from": 2}}
+    assert _compute_unit_price(100.0, lowercase) == (50.0, "L")
+    assert _compute_unit_price(100.0, uppercase) == (50.0, "L")
+
+
+def test_compute_unit_price_falls_back_to_pieces():
+    quantity = {"unit": None, "size": None, "pieces": {"from": 12}}
+    assert _compute_unit_price(36.0, quantity) == (3.0, "pc")
+
+
+def test_compute_unit_price_converts_dl_to_liter():
+    quantity = {"unit": {"symbol": "dl"}, "size": {"from": 5}}
+    assert _compute_unit_price(20.0, quantity) == (40.0, "L")
+
+
+def test_compute_unit_price_handles_pcs_symbol_directly():
+    # Real Tjek data shape (e.g. "KRONE-IS HEIA NORGE"): unit.symbol="pcs" with a
+    # size.from present (the piece count) -- confirmed live this previously fell
+    # through to a bare `return None` before even checking the separate `pieces`
+    # field, silently dropping a computable unit price for every "pcs"-labeled item.
+    quantity = {"unit": {"symbol": "pcs"}, "size": {"from": 10}}
+    assert _compute_unit_price(79.9, quantity) == (7.99, "pc")
+
+
+def test_compute_unit_price_handles_stk_symbol_directly():
+    quantity = {"unit": {"symbol": "stk"}, "size": {"from": 4}}
+    assert _compute_unit_price(20.0, quantity) == (5.0, "pc")
+
+
+def test_compute_unit_price_falls_back_to_pieces_when_symbol_unrecognized():
+    # An unhandled symbol (with a size present) should still try the separate
+    # "pieces" count before giving up -- it must not short-circuit to None the
+    # way it used to for every not-explicitly-handled symbol.
+    quantity = {"unit": {"symbol": "boks"}, "size": {"from": 1}, "pieces": {"from": 6}}
+    assert _compute_unit_price(30.0, quantity) == (5.0, "pc")
+
+
+def test_compute_unit_price_returns_none_when_no_quantity_info():
+    assert _compute_unit_price(50.0, None) is None
+    assert _compute_unit_price(50.0, {}) is None
+
+
+def test_compute_unit_price_returns_none_for_zero_size():
+    quantity = {"unit": {"symbol": "g"}, "size": {"from": 0}}
+    assert _compute_unit_price(50.0, quantity) is None
+
+
+def test_is_non_food_detects_real_observed_non_food_headings():
+    """Regression test using real headings observed live on 2026-07-08."""
+    assert _is_non_food("NIVEA SUN -SOLKREM") is True
+    assert _is_non_food("LAMBI TOALETTPAPIR") is True
+    assert _is_non_food("BATTERIER ENERGIZER") is True
+    assert _is_non_food("XTRA LED LYSPÆRE") is True
+    assert _is_non_food("ZALO OPPVASKBØRSTE") is True
+    assert _is_non_food("SITRONSÅPE") is True
+
+
+def test_is_non_food_does_not_false_positive_on_ice_cream():
+    """Regression test for a real finding: a naive substring check for "krem" would
+    wrongly exclude "iskrem" (ice cream) since it contains "krem" -- confirming the
+    suffix-per-token approach with only full compounds listed avoids this."""
+    assert _is_non_food("Mochi iskrem 180 g") is False
+    assert "krem" not in NON_FOOD_KEYWORDS
+
+
+def test_is_non_food_does_not_false_positive_on_food_bags():
+    """Regression test: "avfallspose" (trash bag) is excluded, but "saftposer" (juice
+    pouches) and "salatposer" (salad bags) -- real food items containing "pose" -- must
+    not be caught by an overly broad "pose" keyword."""
+    assert _is_non_food("Mr. Freeze saftposer 20 x 45 ml") is False
+    assert _is_non_food("SALATPOSER") is False
+    assert _is_non_food("COOP AVFALLSPOSE") is True
+
+
+def test_is_non_food_false_for_ordinary_food():
+    assert _is_non_food("KYLLINGFILET 690 G") is False
+
+
+def test_is_non_food_detects_general_merchandise_from_bigger_box_stores():
+    """Regression test using real headings observed live on 2026-07-15: the original
+    ~500-heading sample this list was built from only covered ordinary grocery stores
+    (confirmed live it caught zero non-food items out of a fresh 792-item scan) --
+    NORWEGIAN_STORES also includes bigger-box formats (Obs, Coop's larger stores) that
+    mix in garden/pool/BBQ gear, cleaning products, pet food, cut flowers, and personal
+    hygiene items, several identifiable only by brand since the heading carries no
+    generic descriptor at all."""
+    assert _is_non_food("Familiebasseng") is True
+    assert _is_non_food("Vannsklie") is True
+    assert _is_non_food("Kingsville gassgrill 6+1") is True
+    assert _is_non_food("WEBER Q 2000 GASSGRILL MED STATIV") is True
+    assert _is_non_food("Softlan skyllemiddel 1,7 l") is True
+    assert _is_non_food("JIF ENGANGSVÅTMOPP CHERRY BLOSSOM") is True
+    assert _is_non_food("MIKROFIBERKLUT UNIVERSAL") is True
+    assert _is_non_food("LIBERO COMFORT STR 7") is True
+    assert _is_non_food("O.B. PRO COMFORT NORMAL") is True
+    assert _is_non_food("SALVEQUICK PLASTER") is True
+    assert _is_non_food("Whiskas Okse 1+ 3,8 kg") is True
+    assert _is_non_food("Pedigree tørrfôr 7 kg") is True
+    assert _is_non_food("ORKIDÉ PHALAENOPSIS") is True
+    assert _is_non_food("Roser, Alstromeria og Brudeslør") is True
+    assert _is_non_food("ZALO ULTRA") is True
+
+
+def test_is_non_food_does_not_false_positive_on_grilled_food():
+    """Regression guard for the gassgrill/kulegrill (appliance) keywords added
+    alongside the general-merchandise expansion above: real grilled-MEAT products
+    (Norwegian "grillpølse"/"grillfilet"/"grillribbe" etc., plus Coop's "Grill Perfekt"
+    sub-brand) must not get caught just because they contain "grill" -- only the two
+    specific appliance compounds are listed, never a bare "grill" suffix."""
+    assert _is_non_food("GILDE GRILLPØLSE") is False
+    assert _is_non_food("SVIN GRILLFILET") is False
+    assert _is_non_food("COOP GRILL PERFEKT BØKERØKTE SOMMERKOTELETTER") is False
+    assert _is_non_food("Ostegrill") is False
+
+
+def test_is_snack_detects_common_snack_headings():
+    assert _is_snack("FRESTA CHIPS SOUR CREAM") is True
+    assert _is_snack("FREIA MELKESJOKOLADE") is True
+    assert _is_snack("NIDAR BILAR GODTERI") is True
+    assert _is_snack("SOFTIS VANILJE") is True
+
+
+def test_is_snack_false_for_ordinary_food():
+    assert _is_snack("KYLLINGFILET 690 G") is False
+    assert _is_snack("LAKSEFILET") is False
+
+
+def test_is_snack_detects_brand_only_candy():
+    """Regression test using real headings observed live on 2026-07-15: several candy
+    headings carry only a manufacturer brand with no generic Norwegian candy word at
+    all."""
+    assert _is_snack("SMARTIES HEXATUBE") is True
+    assert _is_snack("NIDAR POSER") is True
+    assert _is_snack("CLOETTA POPS ORIGINAL") is True
+    assert _is_snack("SWIZZELS SQUASHIES DRUMSTICK") is True
+
+
+def test_is_beverage_detects_common_drink_headings():
+    """brus/cola/iste moved out of SNACK_KEYWORDS into BEVERAGE_KEYWORDS under Epic A's
+    richer food_usage_class taxonomy (a drink isn't a "treat") -- juice/smoothie added
+    after a live scan (2026-07-16) of all 822 current offers across the 11 stores
+    turned up real unambiguous matches for each ("RÅ JUICE", "NYPRESSET APPELSINJUICE",
+    9 distinct "SMOOTHIE"-style headings)."""
+    assert _is_beverage("COCA-COLA 1,5L") is True
+    assert _is_beverage("COOP ISTE") is True
+    assert _is_beverage("COOP BRUS") is True
+    assert _is_beverage("RÅ JUICE") is True
+    assert _is_beverage("FROOSH SMOOTHIE") is True
+    assert _is_beverage("KYLLINGFILET 690 G") is False
+    assert "brus" not in SNACK_KEYWORDS
+    assert "cola" not in SNACK_KEYWORDS
+    assert "iste" not in SNACK_KEYWORDS
+
+
+def test_is_ready_meal_detects_frozen_pizza_but_not_pizza_dough_or_ovens():
+    """Regression test using a live scan (2026-07-16) of all 822 current offers: real
+    frozen pizzas ("BIG ONE PIZZA", "COOP PIZZA", "...CHEESEBURGER PIZZA") all have
+    "pizza" as the whole final token, while the observed false positives
+    ("PIZZABUNN" pizza base, "PIZZADEIG" pizza dough, "Pizzaovn" pizza oven) all have
+    "pizza" as the FIRST half of a fused compound -- the same suffix-per-token matching
+    NON_FOOD_KEYWORDS relies on means only the real ready meals match."""
+    assert _is_ready_meal("BIG ONE PIZZA AMERICAN CLASSIC OG PEPPERONI") is True
+    assert _is_ready_meal("COOP PIZZA") is True
+    assert _is_ready_meal("DR. OETKER RUSTICA CHEESEBURGER PIZZA") is True
+    assert _is_ready_meal("PIZZABUNN PRIME RUND") is False
+    assert _is_ready_meal("FERSK PIZZADEIG") is False
+    assert _is_ready_meal("Pizzaovn") is False
+
+
+def test_is_ready_meal_detects_prepared_soup_and_lasagne():
+    """"suppe" matched two real prepared-soup products in the same live scan ("Mere
+    Mat" chicken/tomato soup, a creamy fish soup); "lasagne" is reasoned safe the same
+    way "pizza" is -- a raw lasagne-sheets product is labeled "lasagneplater" in
+    Norwegian, a token that does not end in "lasagne"."""
+    assert _is_ready_meal("MERE MAT KYLLING-/TOMATSUPPE") is True
+    assert _is_ready_meal("KREMET FISKESUPPE") is True
+    assert _is_ready_meal("LASAGNE") is True
+    assert _is_ready_meal("LASAGNEPLATER") is False
+
+
+def test_is_ready_meal_does_not_include_sandwich():
+    """Deliberately excluded despite being a spec example: the same live scan found
+    "WASA SANDWICH" (a crispbread/cracker product, not a ready-made sandwich) alongside
+    "COOP SANDWICH 12 PK" (a real one) -- not a safe deterministic keyword, left to the
+    LLM tier instead."""
+    assert "sandwich" not in READY_MEAL_KEYWORDS
+
+
+def test_is_ready_to_eat_detects_spiseklar_and_potetsalat():
+    """"spiseklar" is the generic Norwegian word for "ready to eat"; "potetsalat"
+    (potato salad) is an unambiguous prepared side -- both matched real headings in the
+    2026-07-16 live scan. A bare "salat" suffix is deliberately not listed since it
+    would also catch fresh lettuce/salad greens sold as a raw vegetable."""
+    assert _is_ready_to_eat("KYLLING SALATKJØTT SPISEKLAR") is True
+    assert _is_ready_to_eat("MILLS KLASSISK POTETSALAT") is True
+    assert _is_ready_to_eat("Potetsalat 1,4 kg") is True
+    assert _is_ready_to_eat("HODESALAT") is False
+    assert "salat" not in READY_TO_EAT_KEYWORDS
+
+
+def test_is_snack_detects_kvikk_lunsj():
+    """User-reported miss: "Kvikk Lunsj" (a chocolate-covered wafer bar) is a two-word
+    brand name with no generic candy word in the heading at all -- caught via "kvikk"
+    since that's the distinctive, collision-free half of the name ("lunsj" alone means
+    "lunch" and is too generic/risky to key on)."""
+    assert _is_snack("Kvikk Lunsj") is True
+    assert _is_snack("KVIKK LUNSJ 6PK") is True
+    assert _is_snack("KVIKK LUNSJ 3-PK") is True
+
+
+def test_is_snack_does_not_false_positive_on_rice():
+    """Regression guard: "is" (ice) must never be a bare keyword -- it would wrongly
+    match "ris" (rice) and any other ordinary food word ending in those two letters."""
+    assert _is_snack("URIKO RIS 1 KG") is False
+    assert "is" not in SNACK_KEYWORDS
+
+
+def test_classify_product_prioritizes_non_food_over_everything_else():
+    """A heading can't practically match both lists today, but classify_product()'s
+    documented priority (non_food, then ready_meal, then ready_to_eat, then beverage,
+    then snack, then primary_ingredient) should still hold if one ever does."""
+    result = classify_product("NIVEA SUN -SOLKREM")
+    assert result["shopping_group"] == "non_food"
+    assert result["recipe_eligible"] is False
+    assert result["recipe_exclusion_reason"] == "non_food"
+
+
+def test_classify_product_labels_each_food_usage_class():
+    ordinary = classify_product("KYLLINGFILET 690 G")
+    assert ordinary["food_usage_class"] == "primary_ingredient"
+    assert ordinary["recipe_eligible"] is True
+    assert ordinary["recipe_exclusion_reason"] is None
+
+    snack = classify_product("FREIA MELKESJOKOLADE")
+    assert snack["food_usage_class"] == "snack_or_treat"
+    assert snack["recipe_eligible"] is False
+    assert snack["recipe_exclusion_reason"] == "snack_or_treat"
+
+    non_food = classify_product("LAMBI TOALETTPAPIR")
+    assert non_food["shopping_group"] == "non_food"
+    assert non_food["recipe_eligible"] is False
+
+    beverage = classify_product("COCA-COLA 1,5L")
+    assert beverage["food_usage_class"] == "beverage"
+    assert beverage["recipe_eligible"] is False
+    assert beverage["recipe_exclusion_reason"] == "beverage"
+
+    ready_meal = classify_product("BIG ONE PIZZA")
+    assert ready_meal["food_usage_class"] == "ready_meal"
+    assert ready_meal["recipe_eligible"] is False
+    assert ready_meal["recipe_exclusion_reason"] == "finished_meal"
+
+    ready_to_eat = classify_product("MILLS KLASSISK POTETSALAT")
+    assert ready_to_eat["food_usage_class"] == "ready_to_eat"
+    assert ready_to_eat["recipe_eligible"] is False
+    assert ready_to_eat["recipe_exclusion_reason"] == "finished_meal"
+
+
+def _offer(heading, price, pre_price=None, store_name="Kiwi", store_logo="k.svg", quantity=None):
+    return {
+        "heading": heading,
+        "pricing": {"price": price, "pre_price": pre_price, "currency": "NOK"},
+        "quantity": quantity,
+        "dealer": {"name": store_name, "logo": store_logo},
+    }
+
+
+def test_find_discounted_products_includes_every_offer_not_just_discounted_ones():
     client = MagicMock()
-    client.search_products.return_value = [{"ean": "1", "current_price": 80.0, "name": "Kyllingfilet"}]
-    client.get_price_history_bulk.return_value = _price_history_response("1", 100.0)
+    client.get_store_offers.return_value = [
+        _offer("KYLLINGFILET", 80.0, pre_price=100.0),
+        _offer("LAKSEFILET", 90.0),  # no pre_price -- still included
+    ]
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
 
-    assert len(result) == 1
-    assert result[0]["ingredient_en"] == "chicken"
-    assert result[0]["discount_pct"] == 20.0
-    call_kwargs = client.search_products.call_args.kwargs
-    assert call_kwargs == {"category": "Kylling", "size": 20}
+    assert {r["product_name"] for r in result} == {"KYLLINGFILET", "LAKSEFILET"}
+    by_name = {r["product_name"]: r for r in result}
+    assert by_name["KYLLINGFILET"]["discount_pct"] == 20.0
+    assert by_name["KYLLINGFILET"]["reference_price"] == 100.0
+    assert by_name["LAKSEFILET"]["discount_pct"] is None
+    assert by_name["LAKSEFILET"]["reference_price"] is None
 
 
-def test_find_discounted_ingredients_falls_back_to_search_when_no_category():
-    """Regression test: ingredients with no clean Kassalapp category (garlic, carrots,
-    spinach in the real tracked list) must still go through translated free-text
-    search, not silently get skipped."""
-    tracked = [{"en": "garlic", "category": None}]
+def test_find_discounted_products_ignores_a_pre_price_that_is_not_actually_higher():
+    """Defensive guard: a pre_price that's equal to or lower than the current price
+    isn't a real discount (data glitch or promotional pricing quirk) -- must not compute
+    a discount_pct in that case."""
     client = MagicMock()
-    client.search_products.return_value = [{"ean": "1", "current_price": 80.0, "name": "Hvitløk"}]
-    client.get_price_history_bulk.return_value = _price_history_response("1", 100.0)
+    client.get_store_offers.return_value = [_offer("ITEM", 100.0, pre_price=90.0)]
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
 
-    assert len(result) == 1
-    assert result[0]["ingredient_en"] == "garlic"
-    call_kwargs = client.search_products.call_args.kwargs
-    assert call_kwargs == {"search": "hvitløk", "size": 20}
+    assert result[0]["discount_pct"] is None
+    assert result[0]["reference_price"] is None
 
 
-def test_find_discounted_ingredients_excludes_items_below_threshold():
-    tracked = [{"en": "chicken", "category": "Kylling"}]
+def test_find_discounted_products_includes_non_food_and_snack_items_tagged_by_category():
+    """Non-food and snack items are no longer dropped -- the app shows them in their
+    own tab/menu instead of discarding them -- but each gets the legacy category label
+    (for the app's existing Food/Non-food split) and the Epic A classification fields
+    (for pipeline_server.py's recipe_eligible gate)."""
     client = MagicMock()
-    client.search_products.return_value = [{"ean": "1", "current_price": 95.0, "name": "Kyllingfilet"}]
-    client.get_price_history_bulk.return_value = _price_history_response("1", 100.0)  # only 5% below
+    client.get_store_offers.return_value = [
+        _offer("KYLLINGFILET", 80.0),
+        _offer("NIVEA SUN -SOLKREM", 49.0),
+        _offer("FREIA MELKESJOKOLADE", 30.0),
+    ]
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
+
+    by_name = {r["product_name"]: r for r in result}
+    assert set(by_name) == {"KYLLINGFILET", "NIVEA SUN -SOLKREM", "FREIA MELKESJOKOLADE"}
+    assert by_name["KYLLINGFILET"]["category"] == "main_food"
+    assert by_name["KYLLINGFILET"]["recipe_eligible"] is True
+    assert by_name["NIVEA SUN -SOLKREM"]["category"] == "non_food"
+    assert by_name["NIVEA SUN -SOLKREM"]["shopping_group"] == "non_food"
+    assert by_name["NIVEA SUN -SOLKREM"]["recipe_eligible"] is False
+    assert by_name["FREIA MELKESJOKOLADE"]["category"] == "snack"
+    assert by_name["FREIA MELKESJOKOLADE"]["food_usage_class"] == "snack_or_treat"
+    assert by_name["FREIA MELKESJOKOLADE"]["recipe_eligible"] is False
+
+
+def test_find_discounted_products_excludes_offers_missing_a_price():
+    client = MagicMock()
+    client.get_store_offers.return_value = [
+        {"heading": "NO PRICE ITEM", "pricing": {"price": None, "pre_price": None, "currency": "NOK"}, "dealer": {}},
+    ]
+
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
 
     assert result == []
 
 
-def test_find_discounted_ingredients_skips_ingredients_with_no_search_results():
-    tracked = [{"en": "chicken", "category": "Kylling"}, {"en": "salmon", "category": "Laks"}]
+def test_find_discounted_products_computes_unit_price():
+    client = MagicMock()
+    client.get_store_offers.return_value = [
+        _offer("KYLLINGFILET 500G", 50.0, quantity={"unit": {"symbol": "g"}, "size": {"from": 500}})
+    ]
+
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
+
+    assert result[0]["unit_price"] == 100.0
+    assert result[0]["unit_price_unit"] == "kg"
+
+
+def test_find_discounted_products_labels_with_the_stores_own_dealer_name():
+    client = MagicMock()
+    client.get_store_offers.return_value = [_offer("ITEM", 50.0, store_name="KIWI", store_logo="logo.svg")]
+
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
+
+    assert result[0]["store_name"] == "KIWI"
+    assert result[0]["store_logo_url"] == "logo.svg"
+
+
+def test_find_discounted_products_continues_after_a_request_failure():
     client = MagicMock()
 
-    def by_category(category=None, search=None, size=20):
-        if category == "Laks":
-            return [{"ean": "2", "current_price": 50.0, "name": "Laksefilet"}]
-        return []
-
-    client.search_products.side_effect = by_category
-    client.get_price_history_bulk.return_value = _price_history_response("2", 100.0)
-
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
-
-    assert len(result) == 1
-    assert result[0]["ingredient_en"] == "salmon"
-
-
-def test_find_discounted_ingredients_skips_products_missing_ean_or_price():
-    tracked = [{"en": "chicken", "category": "Kylling"}]
-    client = MagicMock()
-    client.search_products.return_value = [{"name": "Kyllingfilet"}]  # no ean, no current_price
-
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
-
-    assert result == []
-
-
-def test_find_discounted_ingredients_continues_after_a_search_failure():
-    """One ingredient's API call failing (network error, rate limit) shouldn't abort
-    the whole scan — the rest of the tracked list should still get checked."""
-    tracked = [{"en": "chicken", "category": "Kylling"}, {"en": "salmon", "category": "Laks"}]
-    client = MagicMock()
-
-    def flaky_search(category=None, search=None, size=20):
-        if category == "Kylling":
+    def by_store(dealer_id, limit=100):
+        if dealer_id == "bad-id":
             raise requests.RequestException("simulated network failure")
-        return [{"ean": "2", "current_price": 50.0, "name": "Laksefilet"}]
+        return [_offer("LAKSEFILET", 50.0)]
 
-    client.search_products.side_effect = flaky_search
-    client.get_price_history_bulk.return_value = _price_history_response("2", 100.0)
+    client.get_store_offers.side_effect = by_store
 
-    result = find_discounted_ingredients(client, tracked=tracked, threshold_pct=15.0)
+    result = find_discounted_products(client, stores={"Broken": "bad-id", "Kiwi": "257bxm"})
 
     assert len(result) == 1
-    assert result[0]["ingredient_en"] == "salmon"
+    assert result[0]["product_name"] == "LAKSEFILET"
 
 
-def test_get_norwegian_term_caches_and_falls_back_to_english_on_failure():
-    import rag.grocery_discounts as gd
-    gd._translation_cache.clear()
+def test_find_discounted_products_sorts_confirmed_discounts_first_by_descending_pct():
+    client = MagicMock()
+    client.get_store_offers.return_value = [
+        _offer("SMALL DISCOUNT", 90.0, pre_price=100.0),
+        _offer("NO DISCOUNT", 50.0),
+        _offer("BIG DISCOUNT", 50.0, pre_price=100.0),
+    ]
 
-    with patch("rag.grocery_discounts.requests.get") as mock_get:
-        mock_get.side_effect = requests.RequestException("simulated network failure")
-        result = get_norwegian_term("xyzzy-unlikely-term")
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
 
-    assert result == "xyzzy-unlikely-term"  # graceful fallback, not a raised exception
-    assert gd._translation_cache["xyzzy-unlikely-term"] == "xyzzy-unlikely-term"
-
-
-def test_get_norwegian_term_uses_override_before_calling_api():
-    import rag.grocery_discounts as gd
-    gd._translation_cache.clear()
-
-    with patch("rag.grocery_discounts.requests.get") as mock_get:
-        result = get_norwegian_term("salmon")
-
-    assert result == "laks"
-    mock_get.assert_not_called()
+    assert [r["product_name"] for r in result] == ["BIG DISCOUNT", "SMALL DISCOUNT", "NO DISCOUNT"]
 
 
-def test_get_norwegian_term_butter_override():
-    """Regression test for a real finding: MyMemory translated "butter" to
-    "påleggssalat og smørepålegg" (a nonsense multi-word phrase), matching zero
-    Kassalapp products."""
-    import rag.grocery_discounts as gd
-    gd._translation_cache.clear()
+def test_find_discounted_products_uses_default_norwegian_stores_when_not_specified():
+    client = MagicMock()
+    client.get_store_offers.return_value = []
 
-    with patch("rag.grocery_discounts.requests.get") as mock_get:
-        result = get_norwegian_term("butter")
+    find_discounted_products(client)
 
-    assert result == "smør"
-    mock_get.assert_not_called()
+    assert client.get_store_offers.call_count == len(NORWEGIAN_STORES)

@@ -1,368 +1,450 @@
-"""Grocery discount detection via Kassalapp (kassal.app) — a Norwegian grocery
-price-comparison API. Foundation for the v2 discount-driven recipe flow: pull current
-discounts on common recipe ingredients, feed them into
-RecipeRAGPipeline.find_recipes_or_generate() as the ingredient list.
+"""Grocery discount detection via Tjek (etilbudsavis.dk) -- a Nordic weekly-flyer
+aggregation API.
 
-No dedicated "on sale" endpoint exists (confirmed against the docs at
-kassal.app/api/docs) — the site has "Prisfall" (price drop) features but they aren't
-exposed via the documented API. So discount detection happens here: fetch a product's
-current price plus its recent price history, and flag it as discounted if the current
-price sits meaningfully below the recent average.
+Tjek's public API surfaces REAL, officially-published weekly flyer offers --
+each with the retailer's own price and, when they chose to advertise a discount, the
+original pre_price too (confirmed live, 2026-07-08: e.g. "COOP KYLLINGFILET 690G" priced
+99.90 kr, was 129.90 kr, sourced directly from Coop's own published flyer, with real
+run_from/run_till validity dates). No API key is required, and no rate limiting was
+observed across 15 rapid requests (all 200 OK).
 
-Product lookup is category-scoped wherever possible, not free-text search on the
-translated ingredient name — confirmed live that free-text search is unreliable for
-this domain: searching "kylling" (chicken) returned 10/10 baby food and deli-cold-cut
-results on the first page (Kassalapp's search does loose substring matching, and short
-Norwegian food words are frequently embedded in unrelated brand/product names — "løk"
-(onion) matches inside "Hvitløk" (garlic), "mel" (flour) matches inside "karaMEL"). By
-contrast, GET /products?category=Kylling (using the real category taxonomy from
-GET /categories, ~2000 entries) returned 8/8 genuine raw chicken products with zero
-noise. TRACKED_INGREDIENTS maps each ingredient to its Kassalapp category name where one
-cleanly exists; a few (garlic, carrots, spinach) have no single-purpose leaf category in
-the taxonomy and fall back to translated free-text search plus the heuristics below.
+Norway coverage: the /dealers endpoint ignores country_id for non-Danish countries and
+always returns Danish dealers regardless (confirmed live) -- there is no way to
+enumerate Norwegian stores from the API itself. NORWEGIAN_STORES is therefore a
+hand-verified list of dealer IDs (found via
+github.com/olgasafonova/tilbudstrolden-mcp, an open-source Nordic meal-planning MCP
+server that had already solved this exact problem) -- every one of these was
+independently confirmed live to return substantial current offer data (17-100 offers
+per store, ~700 total across all 11).
 
-Kassalapp product names are Norwegian; the RAG corpus and recipe generation are English.
-For the free-text fallback path, get_norwegian_term() translates on demand via
-MyMemory's free translation API (no key required, keeps pipeline-service free of heavy
-ML translation libraries) instead of a hand-maintained EN/NO dictionary, which doesn't
-scale and is easy to get subtly wrong. Results are cached in-memory for the life of the
-process — food-word translations don't change, so there's no reason to re-call the API
-every discount scan.
+No product-category data exists for Norwegian offers (category_ids came back empty on
+every Norwegian offer checked) -- there is deliberately no grouping-by-aisle here
+anymore, only per-store listings of real flyer items; the product's own name (heading)
+is descriptive enough on its own. In place of that missing category data, every item
+gets a coarse `category` label computed from two keyword lists:
 
-VERIFIED LIVE (2026-07-06) against a real API key — response shapes, category taxonomy,
-and the search-quality issues described above are all confirmed empirically, not
+- NON_FOOD_KEYWORDS flags non-food items real flyers mix in alongside groceries --
+  sunscreen, soap, batteries, toilet paper from the original ~500-heading/5-store
+  sample, plus (added 2026-07-15 after that original list caught zero non-food items in
+  a fresh 792-item scan) garden/pool/BBQ gear, cleaning products, pet food, cut flowers,
+  and personal hygiene items from the bigger-box stores in NORWEGIAN_STORES (Obs,
+  Coop's larger formats) the original sample never covered. These are no longer dropped
+  from the results (the app shows them in their own tab/menu instead of discarding
+  them), just labeled "non_food" instead of "main_food".
+- SNACK_KEYWORDS flags items that are food but not something a recipe would call for
+  (chips, candy, soda, ice cream, ...), labeled "snack". These stay in the results too
+  (a snack on sale is still worth showing in a deals list) but are excluded from the
+  ingredient list handed to recipe generation, same reasoning as non-food for that one
+  purpose: nobody wants a generated recipe built around a bag of chips.
+
+Both lists match against whole word/token SUFFIXES within each heading, not a plain
+substring of the full string -- confirmed live this matters: a naive substring check for
+"krem" (cream/lotion) would wrongly exclude "iskrem" (ice cream), so only full compounds
+like "solkrem" (sunscreen) are listed, never the bare ambiguous root.
+
+VERIFIED LIVE (2026-07-08) against the real public API -- offer shape, discount fields,
+Norwegian dealer IDs and their offer volumes, absence of rate limiting, and the
+non-food-keyword false-positive risk described above are all confirmed empirically, not
 assumed from documentation alone.
 """
 
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from .product_classification import ProductClassification, build_classification, legacy_category
+
 logger = logging.getLogger(__name__)
 
-# English ingredient -> Kassalapp category name, built from the live category taxonomy
-# (GET /categories). category=None means no clean single-purpose leaf category exists
-# for this ingredient in the ~2000-entry taxonomy (checked, not guessed) — these fall
-# back to translated free-text search (get_norwegian_term + _select_representative_product)
-# instead.
-TRACKED_INGREDIENTS = [
-    {"en": "chicken", "category": "Kylling"},
-    {"en": "ground beef", "category": "Kjøtt"},
-    {"en": "pork", "category": "Kjøtt"},
-    {"en": "salmon", "category": "Laks"},
-    {"en": "cod", "category": "Torsk"},
-    {"en": "shrimp", "category": "Reker"},
-    {"en": "bacon", "category": "Bacon"},
-    {"en": "sausage", "category": "Pølser"},
-    {"en": "eggs", "category": "Egg"},
-    {"en": "milk", "category": "Melk"},
-    {"en": "butter", "category": "Smør og margarin"},
-    {"en": "cheese", "category": "Ost"},
-    {"en": "cream", "category": "Fløte"},
-    {"en": "sour cream", "category": "Rømme"},
-    {"en": "yogurt", "category": "Yoghurt"},
-    {"en": "potatoes", "category": "Poteter"},
-    {"en": "onions", "category": "Løk"},
-    {"en": "garlic", "category": None},
-    {"en": "carrots", "category": None},
-    {"en": "tomatoes", "category": "Tomater"},
-    {"en": "bell peppers", "category": "Paprika"},
-    {"en": "cucumber", "category": "Agurk"},
-    {"en": "cabbage", "category": "Kål"},
-    {"en": "broccoli", "category": "Kål"},
-    {"en": "spinach", "category": None},
-    {"en": "mushrooms", "category": "Sopp"},
-    {"en": "apples", "category": "Epler"},
-    {"en": "bananas", "category": "Bananer"},
-    {"en": "lemons", "category": "Sitrusfrukt"},
-    {"en": "rice", "category": "Ris"},
-    {"en": "pasta", "category": "Pasta"},
-    {"en": "bread", "category": "Brød"},
-    {"en": "flour", "category": "Mel"},
-    {"en": "sugar", "category": "Sukker"},
-]
+BASE_URL = "https://api.etilbudsavis.dk/v2"
+USER_AGENT = "ai-recipe-masterclass/1.0"
 
-# Manual overrides for terms where automatic translation is technically correct but
-# returns an overly formal/rare synonym instead of the everyday grocery-shelf word —
-# found via live testing, not guessed. Used for BOTH the free-text fallback path
-# (garlic/carrots/spinach) and as the disambiguating term within category-scoped
-# results for everything else — a bad translation breaks both equally.
-TRANSLATION_OVERRIDES = {
-    "salmon": "laks",  # MyMemory: "atlanterhavslaks" ("Atlantic salmon") matched zero products
-    "butter": "smør",  # MyMemory: "påleggssalat og smørepålegg" (a nonsense compound phrase)
+# Hand-verified Norwegian dealer IDs (name -> dealer_id) -- the /dealers endpoint cannot
+# enumerate these itself for non-Danish countries (see module docstring). Sourced from
+# github.com/olgasafonova/tilbudstrolden-mcp's locale data and independently confirmed
+# live: every one of these returned substantial real current offers (17-100 each) on
+# 2026-07-08.
+NORWEGIAN_STORES = {
+    "Rema 1000": "faa0Ym",
+    "Kiwi": "257bxm",
+    "Meny": "4333pm",
+    "Coop Prix": "f5d5lm",
+    "Extra": "80742m",
+    "Bunnpris": "5b11sm",
+    "Obs": "51dawm",
+    "Spar": "c062vm",
+    "Joker": "b3e8Fm",
+    "Gigaboks": "5vk-xt",
+    "Holdbart": "pR2h9x",
 }
 
-_translation_cache: Dict[str, str] = {}
+# Real flyers mix in a handful of non-food items alongside groceries (confirmed live by
+# scanning ~500 real Norwegian headings across 5 stores). Deliberately specific full
+# compounds (e.g. "solkrem", not bare "krem") -- see module docstring for why: a bare
+# "krem" would wrongly match "iskrem" (ice cream).
+#
+# 2026-07-15 addition: the original ~500-heading sample only ever covered ordinary
+# grocery stores (Rema/Kiwi/Meny/...); confirmed live against a fresh 792-item scan
+# that this list caught ZERO non-food items, because the bigger-box stores in
+# NORWEGIAN_STORES (Obs, Coop's larger formats) mix in general merchandise this
+# original list never accounted for -- garden/pool/BBQ gear, cleaning products, pet
+# food, flowers, and personal hygiene items, several only identifiable by brand since
+# the heading has no generic descriptor word at all (e.g. "LIBERO COMFORT STR 7" never
+# says "bleie"). The keywords below were added directly from real headings in that
+# scan, grouped by what they cover.
+NON_FOOD_KEYWORDS = [
+    "lotion", "solkrem", "sololje", "spf",
+    "sjampo", "shampoo", "hårbalsam", "hårspray",
+    "dusjsåpe", "håndsåpe", "sitronsåpe", "kjøkkensåpe",
+    "tannkrem", "tannbørste",
+    "bleie", "bleier", "libero", "o.b.",
+    "plaster",
+    "vaskemiddel", "oppvaskmiddel", "oppvasktabletter", "oppvaskbørste", "klesvask",
+    "skyllemiddel", "mopp", "svamp", "svamper", "klut",
+    "spray", "wc", "zalo",
+    "toalettpapir", "tørkerull", "tørkeruller", "kjøkkenrull", "serviett",
+    "avfallspose", "søppelpose",
+    "batteri", "batterier",
+    "lyspære",
+    "deodorant",
+    "barberhøvel", "barberskum",
+    "vaselin",
+    # Garden/pool/outdoor-cooking gear -- real flyer categories at the bigger-box
+    # stores (Obs, Coop's larger formats), never groceries: "Familiebasseng",
+    # "Vannsklie", "Badering Ø91 cm", "Oppblåsbar madrass", "Kingsville gassgrill",
+    # "Weber Spirit E-210 gassgrill", "Kulegrill Basic 43 cm", "Brassestol
+    # sammenleggbar", "Skjærefjøl Akasietre".
+    "basseng", "vannsklie", "badering", "oppblåsbar",
+    "gassgrill", "kulegrill", "brassestol", "skjærefjøl",
+    # Household plastics/paper goods sold alongside groceries but not food themselves:
+    # "Plastbøtte 10 l", "Isbitform med lokk", "Glass med lokk og sugerør" (drinkware,
+    # not the drink), "Klesstativ", "Toalettbørste", "Alle aluminiumsfat/former og
+    # folie", "Sokk 3 pk".
+    "plastbøtte", "plastfat", "plastkopper", "plastskåler",
+    "isbitform", "sugerør", "aluminiumsfat", "folie",
+    "klesstativ", "toalettbørste", "sokk",
+    # Pet food: "tørrfôr" is generic enough to be safe as a bare suffix (dry pet feed
+    # only, never a human food term); "Whiskas Okse", "Sheba Sauce Collection Fish",
+    # "Pedigree tørrfôr", "Eukanuba tørrfôr" only carry a brand name in the heading,
+    # no generic word, so those are listed directly.
+    "tørrfôr", "whiskas", "sheba", "pedigree", "eukanuba",
+    # Cut flowers/potted plants, another real big-box-flyer category: "Orkidé
+    # Phalaenopsis", "Ildtopp Kalanchoe", "Krysantemum"/"Chrysanthemum", "Asters",
+    # "Roser, Alstromeria og Brudeslør", "Favorittbukett", "Spansk Margeritt".
+    "orkidé", "kalanchoe", "ildtopp", "krysantemum", "chrysanthemum",
+    "aster", "asters", "roser", "brudeslør", "bukett", "margeritt",
+]
+
+# Food, but not a recipe ingredient -- excluded from what feeds recipe generation (see
+# module docstring) while still shown in the deals list itself. Same suffix-per-token
+# matching as NON_FOOD_KEYWORDS, and for the same reason: a bare "is" (ice) would wrongly
+# match ordinary food words like "ris" (rice), so only full compounds are listed (e.g.
+# "iskrem", "softis"), never the bare ambiguous "is" root.
+#
+# 2026-07-15: checked against a real 792-item scan (see NON_FOOD_KEYWORDS' matching
+# note above). Generic Norwegian snack/candy/soda words held up well with no false
+# positives found, but several real candy headings carry ONLY a manufacturer brand
+# name with no generic word at all (e.g. "SMARTIES HEXATUBE", "NIDAR POSER", "CLOETTA
+# POPS ORIGINAL", "Kvikk Lunsj" -- a chocolate-covered wafer bar, Norway's best-known
+# candy brand alongside Freia) -- those brands are added directly since there's no
+# generic term to key on instead.
+SNACK_KEYWORDS = [
+    "chips", "potetgull", "nachos",
+    "sjokolade",
+    "godteri", "godis", "smågodt", "vingummi", "lakris",
+    "iskrem", "softis",
+    "kjeks",
+    "snacks",
+    "popcorn",
+    "smarties", "nidar", "brynild", "cloetta", "squashies", "kvikk",
+]
+
+# Epic A splits "food but not a recipe ingredient" into two food_usage_class
+# values instead of one flat "snack" bucket: beverage vs. snack_or_treat (see
+# product_classification.py). brus/cola/iste moved here from SNACK_KEYWORDS
+# above -- they were already there under the old 3-way scheme but are drinks,
+# not treats. juice/smoothie added after a live scan (2026-07-16) of all 822
+# current offers across the 11 stores below turned up "RÅ JUICE",
+# "NYPRESSET APPELSINJUICE" and 9 distinct "SMOOTHIE"/"FROOSH SMOOTHIE"-style
+# headings, all unambiguous beverages.
+BEVERAGE_KEYWORDS = [
+    "brus", "cola", "iste",
+    "juice", "smoothie",
+]
+
+# Epic A food_usage_class="ready_meal": "a substantially complete meal intended
+# to be heated or consumed directly" (frozen pizza, ready-made lasagne,
+# microwave curry, prepared soup, ...). Verified against the same live 822-item
+# scan referenced above:
+# - "pizza" is safe as a whole-token suffix match specifically *because* real
+#   false positives in that scan ("PIZZABUNN" pizza base, "PIZZADEIG" pizza
+#   dough, "Pizzaovn" pizza oven) all have "pizza" as the FIRST half of a fused
+#   compound, so none of those tokens end in "pizza" -- only genuine frozen
+#   pizzas ("BIG ONE PIZZA", "COOP PIZZA", "...CHEESEBURGER PIZZA") had "pizza"
+#   as the token itself. Same suffix-per-token matching as NON_FOOD_KEYWORDS
+#   below relies on for exactly this reason.
+# - "suppe" matched two real prepared-soup products in that scan ("Mere Mat"
+#   chicken/tomato soup, a creamy fish soup) with no raw soup-mix false
+#   positives observed (those are typically labeled "suppemiks"/"pulver" in
+#   Norwegian, not bare "-suppe").
+# - "lasagne" wasn't disprovable as unsafe in the live sample (only one bare
+#   "LASAGNE" heading, no disambiguating text) but is reasoned safe the same
+#   way "pizza" is: a raw lasagne-sheets product is labeled "lasagneplater" in
+#   Norwegian, a token that does not end in "lasagne".
+# Deliberately NOT included despite spec examples: "sandwich" -- the same live
+# scan found "WASA SANDWICH" (a crispbread/cracker product, not a ready-made
+# sandwich) alongside "COOP SANDWICH 12 PK" (a real one), so this keyword isn't
+# a safe deterministic signal; left to the LLM tier instead (see
+# product_classifier.py). "gryte" (stew) and "wok" were excluded for the same
+# reason -- both matched real Norwegian headings that read more like
+# raw meal-kit ingredients than a fully-cooked ready meal.
+READY_MEAL_KEYWORDS = [
+    "pizza", "lasagne", "suppe",
+]
+
+# Epic A food_usage_class="ready_to_eat": "a finished food product that is not
+# normally an input into everyday meal generation" (prepared salad bowl,
+# breakfast yoghurt cup, ...). "spiseklar" is the generic Norwegian word for
+# "ready to eat" and matched a real heading directly in the live scan above
+# ("...KYLLING SALATKJØTT SPISEKLAR"). "potetsalat" (potato salad) matched
+# twice ("MILLS KLASSISK POTETSALAT", "Potetsalat 1,4 kg") and is unambiguous --
+# unlike a bare "salat" suffix, which would also catch fresh lettuce/salad
+# greens sold as a raw vegetable (a primary_ingredient, not ready-to-eat) and
+# was deliberately left out for that reason.
+READY_TO_EAT_KEYWORDS = [
+    "spiseklar", "potetsalat",
+]
 
 
-def get_norwegian_term(english_term: str, timeout: float = 10.0) -> str:
-    """Translates an English ingredient name to Norwegian via MyMemory's free
-    translation API (checking TRANSLATION_OVERRIDES first). Falls back to the English
-    term unchanged on any failure — Kassalapp just won't find a match for an
-    untranslated English search term, which is a quieter failure than raising and
-    aborting the whole discount scan over one bad translation."""
-    if english_term in _translation_cache:
-        return _translation_cache[english_term]
+class TjekClient:
+    """Thin wrapper around Tjek's public offers API -- no API key or auth of any kind
+    required (confirmed live)."""
 
-    if english_term in TRANSLATION_OVERRIDES:
-        translated = TRANSLATION_OVERRIDES[english_term]
-        _translation_cache[english_term] = translated
-        return translated
-
-    try:
-        resp = requests.get(
-            "https://api.mymemory.translated.net/get",
-            params={"q": english_term, "langpair": "en|no"},
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        translated = resp.json()["responseData"]["translatedText"].strip().lower()
-    except (requests.RequestException, KeyError, ValueError) as e:
-        logger.warning(f"Translation failed for {english_term!r}, using English term as-is: {e}")
-        translated = english_term
-
-    _translation_cache[english_term] = translated
-    return translated
-
-
-class KassalappClient:
-    def __init__(self, api_key: str, base_url: str, timeout: float = 15.0):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
 
-    def _headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
-
-    def search_products(
-        self, search: Optional[str] = None, category: Optional[str] = None, size: int = 5
-    ) -> List[Dict[str, Any]]:
-        """search and category are independent filters — pass category alone for a
-        clean category-scoped listing (the preferred path, see module docstring), or
-        search alone for free-text search (the noisier fallback for ingredients with no
-        clean category)."""
-        params: Dict[str, Any] = {"size": size}
-        if search:
-            params["search"] = search
-        if category:
-            params["category"] = category
+    def get_store_offers(self, dealer_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         resp = requests.get(
-            f"{self.base_url}/products",
-            headers=self._headers(),
-            params=params,
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json().get("data", [])
-
-    def get_price_history_bulk(self, eans: List[str], days: int = 30, aggregation: str = "avg") -> Dict[str, Any]:
-        """Max 100 EANs per call per the API docs — not enforced here since
-        TRACKED_INGREDIENTS is far below that, but a future broader sweep would need to
-        batch this."""
-        resp = requests.post(
-            f"{self.base_url}/products/prices-bulk",
-            headers=self._headers(),
-            json={"eans": eans, "days": days, "aggregation": aggregation},
+            f"{BASE_URL}/offers",
+            params={"dealer_id": dealer_id, "limit": limit},
+            headers={"User-Agent": USER_AGENT},
             timeout=self.timeout,
         )
         resp.raise_for_status()
         return resp.json()
 
 
-def _percent_below(current: float, reference: float) -> float:
-    """Non-negative by contract — a price at or above the reference isn't "below" it at
-    all, so it reports 0%, not a negative discount."""
-    if reference <= 0:
-        return 0.0
-    return max(0.0, (reference - current) / reference * 100)
+def _compute_unit_price(
+    price: float, quantity: Optional[Dict[str, Any]]
+) -> Optional[Tuple[float, str]]:
+    """Converts a per-package price into an approximate kr-per-kg/L/piece figure, so the
+    app can show a comparable unit price. Mirrors the same gram/mL-to-kg/L scaling
+    tilbudstrolden-mcp's own client uses.
 
-
-def _extract_reference_price(history_response: Dict[str, Any], ean: str) -> Optional[float]:
-    """Averages the daily price_history entries for the given EAN. Verified live against
-    the real API: /products/prices-bulk returns data[].price_history[] (a full list of
-    {price, date, store} entries), not a single pre-aggregated value — the "aggregation"
-    request param does not collapse this server-side despite what the docs implied, so
-    aggregation happens here instead. Falls back to "no data" (returns None) rather than
-    raising on a shape mismatch, so one product's unexpected response degrades gracefully
-    instead of crashing the whole discount scan."""
-    try:
-        for entry in history_response.get("data", []):
-            if entry.get("ean") == ean:
-                prices = [p["price"] for p in entry.get("price_history", []) if p.get("price") is not None]
-                if prices:
-                    return sum(prices) / len(prices)
-    except (AttributeError, TypeError, ValueError) as e:
-        logger.warning(f"Unexpected prices-bulk response shape for EAN {ean}: {e}")
+    Returns (value, unit_label) rather than a bare float -- the quantity basis varies
+    per product (kg vs L vs piece), so the caller needs the label to render a correct
+    '/kg', '/L', or '/pc' suffix instead of a misleading one-size-fits-all '/unit' (the
+    math here was always correct per-symbol; only the label was missing). unit_label is
+    always one of 'kg', 'L', or 'pc' -- g/ml are normalized up to kg/L (matching
+    whichever the original symbol was), 'l'/'L' both normalize to the label 'L', and the
+    pieces fallback branch is labeled 'pc'."""
+    if not quantity:
+        return None
+    unit_info = quantity.get("unit") or {}
+    symbol = unit_info.get("symbol")
+    size = (quantity.get("size") or {}).get("from")
+    if symbol and size and size > 0:
+        if symbol == "g":
+            return round((price / size) * 1000, 2), "kg"
+        if symbol == "ml":
+            return round((price / size) * 1000, 2), "L"
+        if symbol == "dl":
+            return round((price / size) * 10, 2), "L"
+        if symbol == "kg":
+            return round(price / size, 2), "kg"
+        if symbol in ("l", "L"):
+            return round(price / size, 2), "L"
+        if symbol in ("pcs", "stk"):
+            return round(price / size, 2), "pc"
+        # Some other/unrecognized symbol -- don't give up yet, a usable "pieces"
+        # count (checked below) can still exist alongside an unhandled symbol.
+    pieces = (quantity.get("pieces") or {}).get("from")
+    if pieces and pieces > 0:
+        return round(price / pieces, 2), "pc"
     return None
 
 
-_BABY_FOOD_AGE_PATTERN = re.compile(r"\d+\s*mnd\b")  # "6mnd", "8 mnd" — Norwegian for "N months"
+def _tokens(heading: str) -> List[str]:
+    return re.findall(r"[^\s\-/]+", heading.lower())
 
 
-def _is_baby_food(product: Dict[str, Any]) -> bool:
-    """Only relevant to the free-text fallback path (category-scoped search doesn't
-    surface baby food at all). Confirmed live that a plain category check isn't enough
-    on its own: searching "kylling" (chicken) returned 10/10 baby food results, from at
-    least three different signals depending on the brand — some tag category
-    (Barnemat/Barneprodukter), some don't but follow the "Nmnd" age-in-months naming
-    convention (Hipp/Nestle/Semper), and at least one (Alex&Phil) has neither but
-    states it right in the brand field ("Alex&phil barnemat"). Checking all three
-    catches more real cases than any one alone."""
-    categories = [c.get("name", "") for c in (product.get("category") or [])]
-    if any(cat in ("Barnemat", "Barneprodukter") for cat in categories):
-        return True
-    if "barnemat" in (product.get("brand") or "").lower():
-        return True
-    return bool(_BABY_FOOD_AGE_PATTERN.search((product.get("name") or "").lower()))
+def _matches_any_keyword(heading: str, keywords: List[str]) -> bool:
+    """Shared suffix-per-token matching every keyword list below relies on: checked
+    against each individual word/token in the heading (split on whitespace/hyphen/
+    slash), not a plain substring of the whole string, so this can't accidentally
+    match a food word that happens to contain a shorter keyword inside it (see
+    NON_FOOD_KEYWORDS' module docstring for the "iskrem" case, and READY_MEAL_KEYWORDS'
+    comment above for why this same property is what makes "pizza" safe against
+    "pizzabunn"/"pizzadeig")."""
+    tokens = _tokens(heading)
+    return any(token.endswith(kw) for token in tokens for kw in keywords)
 
 
-def _name_matches_term(name: str, term: str) -> bool:
-    """True if any individual word in the product name starts with term — not the same
-    as checking whether the whole name starts with it (misses brand-first names like
-    "Prior Egg 12stk" for "egg" — confirmed live that's a common Norwegian retail
-    naming pattern) and not the same as a plain substring check either (which is what
-    caused the original problem: "løk" matching inside "Hvitløk", a different
-    vegetable). Checking each word's prefix threads both needles: "kyllingfilet"
-    (one word) still matches "kylling", "prior egg 12stk" matches "egg" via its second
-    word, and "hvitløkspate" still correctly does NOT match "løk" (no word starts with
-    it)."""
-    words = re.findall(r"\w+", name.lower())
-    return any(word.startswith(term) for word in words)
+def _is_non_food(heading: str) -> bool:
+    """Real flyers mix in a handful of non-food items alongside groceries -- see
+    NON_FOOD_KEYWORDS and _matches_any_keyword() for the suffix-per-token matching
+    this relies on."""
+    return _matches_any_keyword(heading, NON_FOOD_KEYWORDS)
 
 
-def _select_representative_product(products: List[Dict[str, Any]], search_term: str) -> Optional[Dict[str, Any]]:
-    """Prefers a non-baby-food product with a usable ean+current_price where some word
-    in the name matches the search term (see _name_matches_term), over one where the
-    search term is just a minor ingredient mention in an unrelated prepared product.
-    Used for both the category-scoped path (to disambiguate ingredients sharing a
-    broad category, e.g. pork vs. ground beef both under "Kjøtt") and the free-text
-    fallback path. Requiring ean+price upfront (rather than the caller discovering a
-    missing one after selection) avoids picking an otherwise-good-looking match that
-    can't actually be priced. Falls back to the first usable non-baby-food result, then
-    the first usable result of any kind, then None if nothing has a usable price at
-    all."""
-    usable = [p for p in products if p.get("ean") and p.get("current_price") is not None]
-    candidates = [p for p in usable if not _is_baby_food(p)] or usable
-    search_lower = search_term.lower()
-    for product in candidates:
-        if _name_matches_term(product.get("name") or "", search_lower):
-            return product
-    return candidates[0] if candidates else None
+def _is_ready_meal(heading: str) -> bool:
+    """See READY_MEAL_KEYWORDS for the live-data reasoning behind this list."""
+    return _matches_any_keyword(heading, READY_MEAL_KEYWORDS)
 
 
-def find_discounted_ingredients(
-    client: KassalappClient,
-    tracked: List[Dict[str, Optional[str]]] = TRACKED_INGREDIENTS,
-    threshold_pct: float = 15.0,
-    history_days: int = 30,
+def _is_ready_to_eat(heading: str) -> bool:
+    """See READY_TO_EAT_KEYWORDS for the live-data reasoning behind this list."""
+    return _matches_any_keyword(heading, READY_TO_EAT_KEYWORDS)
+
+
+def _is_beverage(heading: str) -> bool:
+    """See BEVERAGE_KEYWORDS -- split out from SNACK_KEYWORDS under Epic A's richer
+    food_usage_class taxonomy (a drink isn't a "treat")."""
+    return _matches_any_keyword(heading, BEVERAGE_KEYWORDS)
+
+
+def _is_snack(heading: str) -> bool:
+    """Flags food items that are candy/chips/treats specifically -- see
+    SNACK_KEYWORDS. Beverages moved to _is_beverage() above."""
+    return _matches_any_keyword(heading, SNACK_KEYWORDS)
+
+
+def classify_product(heading: str) -> ProductClassification:
+    """Epic A's replacement for the old flat "non_food"/"snack"/"main_food" string:
+    a full ProductClassification (shopping_group, food_usage_class, meal_role,
+    recipe_eligible, recipe_exclusion_reason) derived purely from keyword lists --
+    the cheap, deterministic first pass every discovered product gets before the
+    permanent classification cache or the LLM tier ever sees it (see
+    refresh_discounts.py).
+
+    Checked in priority order (non_food > ready_meal > ready_to_eat > beverage >
+    snack_or_treat), since a handful of entries across these lists could
+    theoretically both match one heading and non_food is the strongest claim.
+    Nothing beyond that ordering is dropped or hidden based on this label --
+    see NON_FOOD_KEYWORDS' module docstring for how each category is used
+    downstream.
+
+    A heading matching none of the keyword lists defaults to "primary_ingredient"
+    (recipe_eligible=True) rather than "unknown" -- unlike the LLM tier, this
+    heuristic has no way to actively confirm a product is a good ingredient, only
+    to flag ones it's confident aren't, so "no red flag found" defaults to
+    eligible exactly like the old scheme's "main_food" default did. Distinguishing
+    primary_ingredient from supporting_ingredient beyond that default, and
+    assigning a real meal_role, is left to the LLM tier for any product that
+    reaches it (see product_classifier.py) -- this function only ever needs to
+    get eligibility right, not the finer-grained fields."""
+    if _is_non_food(heading):
+        return build_classification("non_food", "not_applicable")
+    if _is_ready_meal(heading):
+        return build_classification("food", "ready_meal")
+    if _is_ready_to_eat(heading):
+        return build_classification("food", "ready_to_eat")
+    if _is_beverage(heading):
+        return build_classification("food", "beverage")
+    if _is_snack(heading):
+        return build_classification("food", "snack_or_treat")
+    return build_classification("food", "primary_ingredient")
+
+
+def find_discounted_products(
+    client: TjekClient,
+    stores: Dict[str, str] = NORWEGIAN_STORES,
+    limit: int = 100,
 ) -> List[Dict[str, Any]]:
-    """Returns tracked ingredients currently priced at least threshold_pct below their
-    recent average — the discount candidates to feed into the recipe pipeline. Checks
-    only one representative product per ingredient (category-scoped listing when a
-    clean category exists, translated free-text search otherwise) rather than every
-    matching product/store — good enough for "is this ingredient generally on sale
-    right now," not a precise multi-store comparison."""
-    discounted = []
-    for i, ingredient in enumerate(tracked):
-        ingredient_en = ingredient["en"]
-        category = ingredient.get("category")
-        # Used to disambiguate WITHIN the candidate pool (category listing or free-text
-        # results), not necessarily as the search query itself — confirmed live that a
-        # shared broad category isn't enough alone: "pork" and "ground beef" both map
-        # to "Kjøtt" and naively taking the first result picked the identical beef
-        # product for both, same for "cabbage"/"broccoli" both under "Kål". Matching
-        # each ingredient's own translated term against candidate names, even within an
-        # already category-narrowed pool, is what actually tells them apart.
-        ingredient_no = get_norwegian_term(ingredient_en)
+    """Fetches every current flyer offer for each known Norwegian store and returns
+    them all -- not filtered by discount, since the value here is in real,
+    currently-published flyer items whether or not the retailer chose to show an
+    explicit "was X" price. Each item gets discount_pct/reference_price attached only
+    when the retailer published an explicit pre_price that is genuinely higher than
+    the current price (a real, official discount, never inferred) -- otherwise both
+    are None. Every item also gets the Epic A classification fields (`shopping_group`,
+    `food_usage_class`, `meal_role`, `recipe_eligible`, `recipe_exclusion_reason` --
+    see classify_product()) from the keyword heuristic; refresh_discounts.py upgrades
+    these with the permanent classification cache and the LLM tier before a snapshot
+    is saved. `category` is kept alongside as the old 3-way "non_food"/"snack"/
+    "main_food" label (see product_classification.legacy_category()) purely for
+    backward compatibility with existing callers (e.g. the mobile app's Food/Non-food
+    tab split) -- pipeline_server.py's /recipes/discounted itself now gates recipe
+    generation on `recipe_eligible`, not `category`. Nothing is dropped based on any
+    of this; callers decide what to do with each classification. Returns everything
+    sorted with confirmed discounts first (highest percentage first); everything else
+    follows in fetch order.
 
+    One request per store total -- no separate price-history call needed, since the
+    discount (when the retailer publishes one) comes directly in the same response.
+    No rate limiting was observed against this public API, so no proactive throttling
+    logic is needed here -- just a light courtesy delay between requests."""
+    discovered: List[Dict[str, Any]] = []
+
+    for i, (store_name, dealer_id) in enumerate(stores.items()):
         if i > 0:
-            time.sleep(0.3)  # observed a 429 (rate limit) partway through an unpaced sweep of 33 ingredients
-
+            time.sleep(0.2)
         try:
-            if category:
-                products = client.search_products(category=category, size=20)
-            else:
-                products = client.search_products(search=ingredient_no, size=20)
-            product = _select_representative_product(products, ingredient_no)
+            offers = client.get_store_offers(dealer_id, limit=limit)
         except requests.RequestException as e:
-            logger.error(f"Kassalapp search failed for {ingredient_en!r}: {e}")
+            logger.error(f"Tjek request failed for store {store_name!r}: {e}")
             continue
 
-        if product is None:
-            continue
-        ean = product["ean"]
-        current_price = product["current_price"]
+        for offer in offers:
+            heading = offer.get("heading")
+            if not heading:
+                continue
+            pricing = offer.get("pricing") or {}
+            price = pricing.get("price")
+            if price is None:
+                continue
 
-        time.sleep(0.3)
-        try:
-            history = client.get_price_history_bulk([ean], days=history_days, aggregation="avg")
-        except requests.RequestException as e:
-            logger.error(f"Kassalapp price history failed for EAN {ean}: {e}")
-            continue
+            pre_price = pricing.get("pre_price")
+            discount_pct = None
+            reference_price = None
+            if pre_price is not None and pre_price > price > 0:
+                discount_pct = round((pre_price - price) / pre_price * 100, 1)
+                reference_price = pre_price
 
-        reference_price = _extract_reference_price(history, ean)
-        if reference_price is None:
-            continue
-
-        pct = _percent_below(current_price, reference_price)
-        if pct >= threshold_pct:
-            discounted.append({
-                "ingredient_en": ingredient_en,
-                "product_name": product.get("name"),
-                "current_price": current_price,
+            dealer = offer.get("dealer") or offer.get("branding") or {}
+            unit_price_result = _compute_unit_price(price, offer.get("quantity"))
+            classification = classify_product(heading)
+            discovered.append({
+                "product_name": heading,
+                "category": legacy_category(classification),
+                "shopping_group": classification["shopping_group"],
+                "food_usage_class": classification["food_usage_class"],
+                "meal_role": classification["meal_role"],
+                "recipe_eligible": classification["recipe_eligible"],
+                "recipe_exclusion_reason": classification["recipe_exclusion_reason"],
+                "current_price": price,
                 "reference_price": reference_price,
-                "discount_pct": round(pct, 1),
+                "discount_pct": discount_pct,
+                "unit_price": unit_price_result[0] if unit_price_result else None,
+                "unit_price_unit": unit_price_result[1] if unit_price_result else None,
+                "image_url": (offer.get("images") or {}).get("view"),
+                "store_name": dealer.get("name") or store_name,
+                "store_logo_url": dealer.get("logo"),
             })
 
-    return discounted
+    discovered.sort(key=lambda d: (d["discount_pct"] is None, -(d["discount_pct"] or 0)))
+    return discovered
 
 
 if __name__ == "__main__":
-    # Live verification script — prints every tracked ingredient's resolved product and
-    # price, not just ones that clear the discount threshold, so you can sanity-check
-    # the lookup itself (right product? real price?) independent of whether anything
-    # happens to be on sale today.
     import json
 
-    from .config import RecipeRAGConfig  # loads src/rag/.env as a side effect
-
-    config = RecipeRAGConfig()
-    if not config.KASSALAPP_API_KEY:
-        raise SystemExit("KASSALAPP_API_KEY not set — add it to src/rag/.env")
-    client = KassalappClient(config.KASSALAPP_API_KEY, config.KASSALAPP_BASE_URL)
-
-    import time
-
-    print(f"{'ingredient':14} {'lookup':20} {'product':45} {'current':>8} {'ref_avg':>8} {'pct_below':>10}")
-    for ingredient in TRACKED_INGREDIENTS:
-        ingredient_en = ingredient["en"]
-        category = ingredient.get("category")
-        ingredient_no = get_norwegian_term(ingredient_en)
-        lookup = f"category={category}" if category else f"search={ingredient_no}"
-
-        if category:
-            products = client.search_products(category=category, size=20)
-        else:
-            products = client.search_products(search=ingredient_no, size=20)
-        product = _select_representative_product(products, ingredient_no)
-
-        if product is None:
-            print(f"{ingredient_en:14} {lookup:20} NO USABLE PRODUCT FOUND")
-            continue
-
-        time.sleep(0.3)  # observed a 429 (rate limit) partway through an unpaced sweep of 33 ingredients
-        history = client.get_price_history_bulk([product["ean"]], days=30, aggregation="avg")
-        ref = _extract_reference_price(history, product["ean"])
-        pct = _percent_below(product["current_price"], ref) if ref else None
-        print(
-            f"{ingredient_en:14} {lookup:20} {product.get('name', '')!r:45} "
-            f"{product['current_price']:>8} {round(ref, 2) if ref else 'None':>8} "
-            f"{round(pct, 1) if pct is not None else 'None':>10}"
-        )
-
-    print("\n--- find_discounted_ingredients (threshold_pct=15.0) ---")
-    discounts = find_discounted_ingredients(client)
-    print(json.dumps(discounts, indent=2, ensure_ascii=False))
+    client = TjekClient()
+    print(f"Sweeping {len(NORWEGIAN_STORES)} Norwegian stores via Tjek...")
+    discovered = find_discounted_products(client)
+    with_discount = sum(1 for d in discovered if d["discount_pct"] is not None)
+    print(f"\n--- {len(discovered)} products found, {with_discount} with a confirmed discount ---")
+    print(json.dumps(discovered[:10], indent=2, ensure_ascii=False))
