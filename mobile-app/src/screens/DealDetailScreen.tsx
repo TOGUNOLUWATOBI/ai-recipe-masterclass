@@ -5,6 +5,7 @@ import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TouchableOpacit
 import { getRecipesFromIngredients } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { MAX_INGREDIENT_COUNT } from "../api/validation";
+import { AddToCartButton } from "../components/AddToCartButton";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { RecipeCard } from "../components/RecipeCard";
 import { useLanguage } from "../i18n/LanguageContext";
@@ -118,6 +119,7 @@ export function DealDetailScreen() {
             </>
           ) : null}
         </View>
+        <AddToCartButton deal={deal} />
       </View>
 
       <Text style={styles.recipesHeading}>{t.dealDetailRecipesWith(deal.product_name)}</Text>

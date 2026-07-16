@@ -1,6 +1,7 @@
 import React from "react";
 import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import type { DiscountedProduct } from "../types/api";
+import { AddToCartButton } from "./AddToCartButton";
 
 function formatNok(value: number): string {
   return `${value.toFixed(2).replace(".", ",")} kr`;
@@ -51,6 +52,10 @@ export function DealCard({ deal, onPress }: DealCardProps) {
           </Text>
         ) : null}
       </View>
+      {/* Nested TouchableOpacity: React Native's touch responder system grants the
+          gesture to whichever view claims it (here, the button/stepper inside), so
+          tapping this never also fires the card's own onPress/navigation. */}
+      <AddToCartButton deal={deal} compact />
     </TouchableOpacity>
   );
 }

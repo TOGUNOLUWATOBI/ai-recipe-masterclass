@@ -85,11 +85,16 @@ export type MealRole =
 export interface DiscountedProduct {
   product_name: string;
   category: DiscountedProductCategory | null;
-  shopping_group: ShoppingGroup | null;
-  food_usage_class: FoodUsageClass | null;
-  meal_role: MealRole | null;
-  recipe_eligible: boolean | null;
-  recipe_exclusion_reason: string | null;
+  // Optional (not just nullable) even though the live backend always sends these now --
+  // keeping them optional means the many existing test fixtures/mocks built before
+  // Epic A don't all need to be touched just to satisfy the type checker. A missing key
+  // here should be treated exactly like an explicit null (see cart/cartItemId.ts and
+  // CartContext.tsx's "?? " fallbacks).
+  shopping_group?: ShoppingGroup | null;
+  food_usage_class?: FoodUsageClass | null;
+  meal_role?: MealRole | null;
+  recipe_eligible?: boolean | null;
+  recipe_exclusion_reason?: string | null;
   current_price: number;
   // null when we don't have enough price history to compute a meaningful discount —
   // the backend now returns every product per store, not just confirmed discounts, so

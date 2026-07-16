@@ -2,8 +2,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { NavigationContainer } from "@react-navigation/native";
 import React from "react";
+import { useCart } from "../cart/CartContext";
 import { useLanguage } from "../i18n/LanguageContext";
 import { AskScreen } from "../screens/AskScreen";
+import { CartScreen } from "../screens/CartScreen";
 import { IngredientsScreen } from "../screens/IngredientsScreen";
 import { TilbudStackNavigator } from "./TilbudStackNavigator";
 
@@ -11,12 +13,15 @@ const Tab = createBottomTabNavigator();
 
 const TAB_ICONS: Record<string, { filled: keyof typeof Ionicons.glyphMap; outline: keyof typeof Ionicons.glyphMap }> = {
   Tilbud: { filled: "pricetags", outline: "pricetags-outline" },
+  Cart: { filled: "cart", outline: "cart-outline" },
   Ask: { filled: "chatbubble-ellipses", outline: "chatbubble-ellipses-outline" },
   Ingredients: { filled: "restaurant", outline: "restaurant-outline" },
 };
 
 export function AppNavigator() {
   const { t } = useLanguage();
+  const { items } = useCart();
+  const cartBadgeCount = items.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
     <NavigationContainer>
@@ -32,6 +37,11 @@ export function AppNavigator() {
         })}
       >
         <Tab.Screen name="Tilbud" component={TilbudStackNavigator} options={{ title: t.tabDeals }} />
+        <Tab.Screen
+          name="Cart"
+          component={CartScreen}
+          options={{ title: t.tabCart, tabBarBadge: cartBadgeCount > 0 ? cartBadgeCount : undefined }}
+        />
         <Tab.Screen name="Ask" component={AskScreen} options={{ title: t.tabAsk }} />
         <Tab.Screen name="Ingredients" component={IngredientsScreen} options={{ title: t.tabIngredients }} />
       </Tab.Navigator>

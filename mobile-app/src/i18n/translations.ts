@@ -13,9 +13,22 @@ import type { Language } from "./language";
 export const translations = {
   en: {
     tabDeals: "Deals",
+    tabCart: "Cart",
     tabAsk: "Ask",
     tabIngredients: "Ingredients",
     dealDetailTitle: "Recipe",
+
+    addToCart: "Add to cart",
+    cartEmpty: "Your cart is empty. Add items from Deals to get started.",
+    useForMealIdeas: "Use for meal ideas",
+    notUsedForMealIdeas: "Not used for meal suggestions",
+    ingredientsSelectedForMealIdeas: (count: number) =>
+      `${count} ingredient${count === 1 ? "" : "s"} selected for meal ideas`,
+    offerMayBeExpired: "Offer may have expired",
+    clearCart: "Clear cart",
+    clearCartConfirmTitle: "Clear cart?",
+    clearCartConfirmMessage: "This will remove all items from your cart.",
+    cancel: "Cancel",
 
     foodTab: "Food",
     nonFoodTab: "Non-food",
@@ -62,9 +75,22 @@ export const translations = {
   },
   no: {
     tabDeals: "Tilbud",
+    tabCart: "Handlekurv",
     tabAsk: "Spør",
     tabIngredients: "Ingredienser",
     dealDetailTitle: "Oppskrift",
+
+    addToCart: "Legg i handlekurv",
+    cartEmpty: "Handlekurven din er tom. Legg til varer fra Tilbud for å komme i gang.",
+    useForMealIdeas: "Bruk til middagsidéer",
+    notUsedForMealIdeas: "Brukes ikke til middagsforslag",
+    ingredientsSelectedForMealIdeas: (count: number) =>
+      `${count} ingrediens${count === 1 ? "" : "er"} valgt til middagsidéer`,
+    offerMayBeExpired: "Tilbudet kan ha utløpt",
+    clearCart: "Tøm handlekurv",
+    clearCartConfirmTitle: "Tømme handlekurven?",
+    clearCartConfirmMessage: "Dette fjerner alle varer fra handlekurven din.",
+    cancel: "Avbryt",
 
     foodTab: "Mat",
     nonFoodTab: "Ikke-mat",
