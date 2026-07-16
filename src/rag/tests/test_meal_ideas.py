@@ -210,6 +210,33 @@ def test_builds_an_idea_from_a_retrieved_corpus_recipe():
     assert idea["estimated_complexity"] is None
 
 
+def test_epic_d_structuring_is_wired_in_correctly():
+    """Integration check (not just recipe_structuring.py's own unit tests, see
+    test_recipe_structuring.py): a pantry basic and an optional seasoning in a real
+    retrieved recipe must not count against coverage/completion_status, and the
+    structured fields must actually reach the response."""
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [
+        _grounded_result("Ribbe", [
+            "4 lbs (1.8 kg) pork belly, skin on, ribs attached",
+            "2 tbsp coarse sea salt, plus more for the skin",
+            "1 tsp freshly ground black pepper",
+        ]),
+    ]
+    discounts = [_row("SVIN")]  # normalizes to "pork" (grocery_terms.py)
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::SVIN"])
+
+    idea = result["ideas"][0]
+    assert [ing["name"] for ing in idea["required_ingredients"]] == ["pork belly, skin on, ribs attached"]
+    assert len(idea["optional_ingredients"]) == 1
+    assert "pepper" in idea["optional_ingredients"][0]["name"].lower()
+    assert idea["completion_status"] == "complete"
+    assert idea["missing_required_ingredients"] == []
+    assert idea["pantry_basics_assumed"] == ["salt", "water", "cooking oil"]
+    assert idea["servings"] is None
+
+
 def test_never_sends_an_excluded_products_name_into_the_retrieval_query():
     """Task C2's hard requirement: excluded items must never reach a retrieval query."""
     pipeline = MagicMock()
@@ -289,7 +316,29 @@ def test_falls_back_to_generation_when_retrieval_returns_nothing(monkeypatch):
     assert idea["source_type"] == "generated"
     assert idea["title"] == "Chicken Rice Bowl"
     assert idea["selected_items_used"] == ["chicken fillet"]
-    assert idea["missing_required_ingredients"] == ["rice"] or "rice" not in idea["missing_required_ingredients"]
+    assert idea["missing_required_ingredients"] == ["rice"]
+
+
+def test_generation_fallback_also_applies_epic_d_structuring():
+    """The generated path parses ingredients from the model's own bulleted list (see
+    _split_generated_ingredient_lines) -- Epic D's required/optional split and pantry
+    filtering must apply there too, not just to corpus recipes."""
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = []
+    pipeline.generator.generate.return_value = (
+        "### Pork and Rice\n\n**Ingredients:**\n"
+        "- 500 g pork belly\n- 1 tsp salt\n- pepper to taste\n\n"
+        "**Instructions:**\n1. Cook everything."
+    )
+    discounts = [_row("SVIN")]
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::SVIN"], max_results=1)
+
+    idea = result["ideas"][0]
+    assert [ing["name"] for ing in idea["required_ingredients"]] == ["pork belly"]
+    assert len(idea["optional_ingredients"]) == 1
+    assert idea["pantry_basics_assumed"] == ["salt", "water", "cooking oil"]
+    assert idea["completion_status"] == "complete"
 
 
 def test_generation_fallback_never_crashes_when_the_llm_call_fails():

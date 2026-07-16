@@ -18,6 +18,7 @@ COPY rag/pipeline.py ./rag/pipeline.py
 COPY rag/product_classification.py ./rag/product_classification.py
 COPY rag/manual_product_overrides.json ./rag/manual_product_overrides.json
 COPY rag/product_classifier.py ./rag/product_classifier.py
+COPY rag/recipe_structuring.py ./rag/recipe_structuring.py
 COPY rag/refresh_discounts.py ./rag/refresh_discounts.py
 COPY rag/retrieval_client.py ./rag/retrieval_client.py
 COPY rag/pipeline_server.py ./rag/pipeline_server.py
