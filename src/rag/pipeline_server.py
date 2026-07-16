@@ -146,16 +146,19 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True, lang
     # way, there's no deception even on an unusual heading; the source data itself is a
     # real, officially-published offer, not an inferred or fuzzy match.
     #
-    # Only "main_food" items go into the recipe query — "non_food" (soap, batteries,
-    # ...) and "snack" (chips, candy, soda, ...) items are still returned in
-    # discounted_ingredients below for the app's own tabs/menus, but neither makes for
-    # a sensible recipe ingredient (see grocery_discounts.classify_product()).
-    # `d.get("category") or "main_food"`, not `d.get("category", "main_food")` — every
-    # row from get_latest_snapshot() already has a "category" key (it's one of
-    # discounts_store._COLUMNS), just with value None for rows written before this
-    # column existed or before the next scan overwrites them, so a plain .get(...,
-    # default) would never actually apply the default (the key is never *missing*,
-    # only sometimes None) and would wrongly treat every un-migrated row as excluded.
+    # Only recipe_eligible items go into the recipe query (Epic A) — non-food (soap,
+    # batteries, ...), beverages, snacks/treats, and ready meals/ready-to-eat products
+    # (frozen pizza, ready-made lasagne, chocolate, Coca-Cola, ...) are still returned
+    # in discounted_ingredients below for the app's own tabs/menus, but none of them
+    # make for a sensible recipe ingredient (see product_classification.py). This
+    # replaces the old `category == "main_food"` gate, which had no way to tell a
+    # frozen pizza or a chocolate bar apart from a real ingredient — both used to slip
+    # through as "main_food" since neither matched the old keyword-only non-food/snack
+    # checks.
+    #
+    # Rows written before Epic A existed have recipe_eligible=False (see
+    # discounts_store.get_latest_snapshot()) until the next scan reclassifies them, so
+    # they're excluded here rather than wrongly treated as eligible.
     #
     # Capped at 30 after that filter — the discount scan now returns every product per
     # store (up to ~1400 across all stores), not just discounted ones, and joining all
@@ -163,8 +166,8 @@ def recipes_discounted(max_results: int = 10, include_recipes: bool = True, lang
     # list into a single comma-separated string) would dilute the query into noise
     # rather than actually cost more. discounts is already sorted with confirmed
     # discounts first, so this naturally keeps the real deals.
-    main_food = [d for d in discounts if (d.get("category") or "main_food") == "main_food"]
-    product_names = [d["product_name"] for d in main_food[:30]]
+    eligible = [d for d in discounts if d.get("recipe_eligible")]
+    product_names = [d["product_name"] for d in eligible[:30]]
 
     if not product_names:
         return {

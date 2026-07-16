@@ -6,12 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from rag.discounts_store import get_cached_categories, get_latest_snapshot, save_categories, save_snapshot
+from rag.discounts_store import (
+    get_cached_classifications,
+    get_latest_snapshot,
+    save_classifications,
+    save_snapshot,
+)
 
 _SAMPLE = [
     {
         "product_name": "Kyllingfilet 500g",
         "category": "main_food",
+        "shopping_group": "food",
+        "food_usage_class": "primary_ingredient",
+        "meal_role": "protein",
+        "recipe_eligible": True,
+        "recipe_exclusion_reason": None,
         "current_price": 80.0,
         "reference_price": 100.0,
         "discount_pct": 20.0,
@@ -24,6 +34,11 @@ _SAMPLE = [
     {
         "product_name": "Laksefilet 400g",
         "category": "main_food",
+        "shopping_group": "food",
+        "food_usage_class": "primary_ingredient",
+        "meal_role": "protein",
+        "recipe_eligible": True,
+        "recipe_exclusion_reason": None,
         "current_price": 90.0,
         "reference_price": 150.0,
         "discount_pct": 40.0,
@@ -60,6 +75,22 @@ def test_save_and_get_roundtrip(db_path):
     assert salmon["store_name"] == "Meny"
     assert salmon["discount_pct"] == 40.0
     assert salmon["category"] == "main_food"
+    assert salmon["food_usage_class"] == "primary_ingredient"
+    assert salmon["recipe_eligible"] is True
+
+
+def test_save_and_get_roundtrip_coerces_recipe_eligible_to_a_real_bool(db_path):
+    """SQLite has no native boolean type -- recipe_eligible is stored as 0/1 and must
+    come back as an actual Python bool, not an int, so callers can safely use it in a
+    boolean context (e.g. pipeline_server.py's `if d.get("recipe_eligible")`)."""
+    ineligible = {**_SAMPLE[0], "product_name": "Cola 0,5l", "food_usage_class": "beverage",
+                  "recipe_eligible": False, "recipe_exclusion_reason": "beverage"}
+    save_snapshot(db_path, [ineligible], scanned_at="2026-07-16T06:00:00+00:00")
+
+    discounts, _ = get_latest_snapshot(db_path)
+
+    assert discounts[0]["recipe_eligible"] is False
+    assert isinstance(discounts[0]["recipe_eligible"], bool)
 
 
 def test_save_snapshot_orders_by_discount_pct_descending(db_path):
@@ -103,6 +134,12 @@ def test_save_and_get_roundtrip_preserves_none_discount_fields(db_path):
     sort after real ones, not crash or sort first)."""
     plain_item = {
         "product_name": "Cola 0,5l",
+        "category": "snack",
+        "shopping_group": "food",
+        "food_usage_class": "beverage",
+        "meal_role": "not_applicable",
+        "recipe_eligible": False,
+        "recipe_exclusion_reason": "beverage",
         "current_price": 20.0,
         "reference_price": None,
         "discount_pct": None,
@@ -132,56 +169,110 @@ def test_get_latest_snapshot_creates_parent_directory_if_missing(db_path):
     assert Path(db_path).parent.exists()
 
 
-def test_get_cached_categories_returns_empty_dict_before_anything_cached(db_path):
-    assert get_cached_categories(db_path, ["Kyllingfilet 500g"]) == {}
+def _classification(**overrides):
+    base = {
+        "shopping_group": "food",
+        "food_usage_class": "primary_ingredient",
+        "meal_role": "protein",
+        "recipe_eligible": True,
+        "recipe_exclusion_reason": None,
+    }
+    base.update(overrides)
+    return base
 
 
-def test_save_and_get_cached_categories_roundtrip(db_path):
-    save_categories(db_path, {"Kyllingfilet 500g": "main_food", "Kvikk Lunsj": "snack"})
+def test_get_cached_classifications_returns_empty_dict_before_anything_cached(db_path):
+    assert get_cached_classifications(db_path, ["Kyllingfilet 500g"]) == {}
 
-    result = get_cached_categories(db_path, ["Kyllingfilet 500g", "Kvikk Lunsj", "Never Seen"])
 
-    assert result == {"Kyllingfilet 500g": "main_food", "Kvikk Lunsj": "snack"}
+def test_save_and_get_cached_classifications_roundtrip(db_path):
+    save_classifications(
+        db_path,
+        {
+            "Kyllingfilet 500g": _classification(),
+            "Kvikk Lunsj": _classification(food_usage_class="snack_or_treat", meal_role="not_applicable",
+                                            recipe_eligible=False, recipe_exclusion_reason="snack_or_treat"),
+        },
+        classification_source="heuristic", classified_at="2026-07-16T06:00:00+00:00",
+        classifier_version="epic-a-v1",
+    )
+
+    result = get_cached_classifications(db_path, ["Kyllingfilet 500g", "Kvikk Lunsj", "Never Seen"])
+
+    assert result["Kyllingfilet 500g"]["food_usage_class"] == "primary_ingredient"
+    assert result["Kyllingfilet 500g"]["recipe_eligible"] is True
+    assert result["Kvikk Lunsj"]["food_usage_class"] == "snack_or_treat"
+    assert result["Kvikk Lunsj"]["recipe_eligible"] is False
     assert "Never Seen" not in result
 
 
-def test_save_categories_upserts_an_existing_product_name(db_path):
-    """A product reclassified later (e.g. keyword list improved) must overwrite the
-    old cached value, not duplicate or ignore it."""
-    save_categories(db_path, {"Kvikk Lunsj": "main_food"})
-    save_categories(db_path, {"Kvikk Lunsj": "snack"})
+def test_save_classifications_upserts_an_existing_product_name(db_path):
+    """A product reclassified later (e.g. an LLM upgrade, or a manual override added
+    after the fact) must overwrite the old cached value, not duplicate or ignore it."""
+    save_classifications(
+        db_path, {"Kvikk Lunsj": _classification()},
+        classification_source="heuristic", classified_at="2026-07-16T06:00:00+00:00",
+        classifier_version="epic-a-v1",
+    )
+    save_classifications(
+        db_path,
+        {"Kvikk Lunsj": _classification(food_usage_class="snack_or_treat", meal_role="not_applicable",
+                                         recipe_eligible=False, recipe_exclusion_reason="snack_or_treat")},
+        classification_source="llm", classified_at="2026-07-16T07:00:00+00:00",
+        classifier_version="epic-a-v1",
+    )
 
-    assert get_cached_categories(db_path, ["Kvikk Lunsj"]) == {"Kvikk Lunsj": "snack"}
+    result = get_cached_classifications(db_path, ["Kvikk Lunsj"])
+
+    assert result["Kvikk Lunsj"]["food_usage_class"] == "snack_or_treat"
+    assert result["Kvikk Lunsj"]["recipe_eligible"] is False
 
 
-def test_save_categories_does_not_disturb_previously_cached_entries(db_path):
-    """product_categories accumulates indefinitely across refreshes (unlike
+def test_save_classifications_does_not_disturb_previously_cached_entries(db_path):
+    """product_classifications accumulates indefinitely across refreshes (unlike
     `discounts`, which save_snapshot() replaces wholesale each scan) -- a later save
     for a different product must not wipe out earlier ones."""
-    save_categories(db_path, {"Kyllingfilet 500g": "main_food"})
-    save_categories(db_path, {"Kvikk Lunsj": "snack"})
+    save_classifications(
+        db_path, {"Kyllingfilet 500g": _classification()},
+        classification_source="heuristic", classified_at="2026-07-16T06:00:00+00:00",
+        classifier_version="epic-a-v1",
+    )
+    save_classifications(
+        db_path, {"Kvikk Lunsj": _classification(food_usage_class="snack_or_treat",
+                                                  recipe_eligible=False, recipe_exclusion_reason="snack_or_treat")},
+        classification_source="heuristic", classified_at="2026-07-16T06:00:00+00:00",
+        classifier_version="epic-a-v1",
+    )
 
-    result = get_cached_categories(db_path, ["Kyllingfilet 500g", "Kvikk Lunsj"])
+    result = get_cached_classifications(db_path, ["Kyllingfilet 500g", "Kvikk Lunsj"])
 
-    assert result == {"Kyllingfilet 500g": "main_food", "Kvikk Lunsj": "snack"}
-
-
-def test_save_categories_is_a_noop_for_an_empty_dict(db_path):
-    save_categories(db_path, {})
-
-    assert get_cached_categories(db_path, ["Kyllingfilet 500g"]) == {}
-
-
-def test_get_cached_categories_is_a_noop_for_an_empty_name_list(db_path):
-    save_categories(db_path, {"Kyllingfilet 500g": "main_food"})
-
-    assert get_cached_categories(db_path, []) == {}
+    assert set(result) == {"Kyllingfilet 500g", "Kvikk Lunsj"}
 
 
-def test_save_snapshot_migrates_a_pre_category_database(db_path):
-    """Every deployed DB predates the `category` column -- simulate one (table created
-    without it, like a real pre-migration file) and confirm a save/read cycle against it
-    adds the column instead of crashing with "no such column"."""
+def test_save_classifications_is_a_noop_for_an_empty_dict(db_path):
+    save_classifications(
+        db_path, {}, classification_source="heuristic",
+        classified_at="2026-07-16T06:00:00+00:00", classifier_version="epic-a-v1",
+    )
+
+    assert get_cached_classifications(db_path, ["Kyllingfilet 500g"]) == {}
+
+
+def test_get_cached_classifications_is_a_noop_for_an_empty_name_list(db_path):
+    save_classifications(
+        db_path, {"Kyllingfilet 500g": _classification()},
+        classification_source="heuristic", classified_at="2026-07-16T06:00:00+00:00",
+        classifier_version="epic-a-v1",
+    )
+
+    assert get_cached_classifications(db_path, []) == {}
+
+
+def test_save_snapshot_migrates_a_pre_epic_a_database(db_path):
+    """Every DB deployed before Epic A predates the classification columns -- simulate
+    one (table created with just the original pre-`category` columns, like a real
+    pre-migration file) and confirm a save/read cycle against it adds every missing
+    column instead of crashing with "no such column"."""
     import sqlite3
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -210,3 +301,39 @@ def test_save_snapshot_migrates_a_pre_category_database(db_path):
     assert updated_at == "2026-07-15T06:00:00+00:00"
     salmon = next(d for d in discounts if d["product_name"] == "Laksefilet 400g")
     assert salmon["category"] == "main_food"
+    assert salmon["food_usage_class"] == "primary_ingredient"
+    assert salmon["recipe_eligible"] is True
+
+
+def test_save_snapshot_migrates_a_pre_epic_a_database_missing_only_category(db_path):
+    """A DB deployed after `category` was added but before Epic A (i.e. missing just
+    the five new classification columns) must also migrate cleanly."""
+    import sqlite3
+
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE discounts (
+            scanned_at TEXT NOT NULL,
+            product_name TEXT,
+            category TEXT,
+            current_price REAL,
+            reference_price REAL,
+            discount_pct REAL,
+            unit_price REAL,
+            unit_price_unit TEXT,
+            image_url TEXT,
+            store_name TEXT,
+            store_logo_url TEXT
+        )
+    """)
+    conn.execute("CREATE TABLE scan_meta (id INTEGER PRIMARY KEY CHECK (id = 0), last_scanned_at TEXT NOT NULL)")
+    conn.commit()
+    conn.close()
+
+    save_snapshot(db_path, _SAMPLE, scanned_at="2026-07-16T06:00:00+00:00")
+    discounts, _ = get_latest_snapshot(db_path)
+
+    salmon = next(d for d in discounts if d["product_name"] == "Laksefilet 400g")
+    assert salmon["food_usage_class"] == "primary_ingredient"
+    assert salmon["recipe_eligible"] is True

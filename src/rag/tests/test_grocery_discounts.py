@@ -9,12 +9,18 @@ import pytest
 import requests
 
 from rag.grocery_discounts import (
+    BEVERAGE_KEYWORDS,
     NON_FOOD_KEYWORDS,
     NORWEGIAN_STORES,
+    READY_MEAL_KEYWORDS,
+    READY_TO_EAT_KEYWORDS,
     SNACK_KEYWORDS,
     TjekClient,
     _compute_unit_price,
+    _is_beverage,
     _is_non_food,
+    _is_ready_meal,
+    _is_ready_to_eat,
     _is_snack,
     classify_product,
     find_discounted_products,
@@ -203,7 +209,6 @@ def test_is_snack_detects_common_snack_headings():
     assert _is_snack("FRESTA CHIPS SOUR CREAM") is True
     assert _is_snack("FREIA MELKESJOKOLADE") is True
     assert _is_snack("NIDAR BILAR GODTERI") is True
-    assert _is_snack("COCA-COLA 1,5L") is True
     assert _is_snack("SOFTIS VANILJE") is True
 
 
@@ -212,16 +217,77 @@ def test_is_snack_false_for_ordinary_food():
     assert _is_snack("LAKSEFILET") is False
 
 
-def test_is_snack_detects_brand_only_candy_and_iced_tea():
+def test_is_snack_detects_brand_only_candy():
     """Regression test using real headings observed live on 2026-07-15: several candy
     headings carry only a manufacturer brand with no generic Norwegian candy word at
-    all, and iced tea ("iste") is a beverage in the same not-a-recipe-ingredient sense
-    as brus/cola, just not literally soda."""
+    all."""
     assert _is_snack("SMARTIES HEXATUBE") is True
     assert _is_snack("NIDAR POSER") is True
     assert _is_snack("CLOETTA POPS ORIGINAL") is True
     assert _is_snack("SWIZZELS SQUASHIES DRUMSTICK") is True
-    assert _is_snack("COOP ISTE") is True
+
+
+def test_is_beverage_detects_common_drink_headings():
+    """brus/cola/iste moved out of SNACK_KEYWORDS into BEVERAGE_KEYWORDS under Epic A's
+    richer food_usage_class taxonomy (a drink isn't a "treat") -- juice/smoothie added
+    after a live scan (2026-07-16) of all 822 current offers across the 11 stores
+    turned up real unambiguous matches for each ("RÅ JUICE", "NYPRESSET APPELSINJUICE",
+    9 distinct "SMOOTHIE"-style headings)."""
+    assert _is_beverage("COCA-COLA 1,5L") is True
+    assert _is_beverage("COOP ISTE") is True
+    assert _is_beverage("COOP BRUS") is True
+    assert _is_beverage("RÅ JUICE") is True
+    assert _is_beverage("FROOSH SMOOTHIE") is True
+    assert _is_beverage("KYLLINGFILET 690 G") is False
+    assert "brus" not in SNACK_KEYWORDS
+    assert "cola" not in SNACK_KEYWORDS
+    assert "iste" not in SNACK_KEYWORDS
+
+
+def test_is_ready_meal_detects_frozen_pizza_but_not_pizza_dough_or_ovens():
+    """Regression test using a live scan (2026-07-16) of all 822 current offers: real
+    frozen pizzas ("BIG ONE PIZZA", "COOP PIZZA", "...CHEESEBURGER PIZZA") all have
+    "pizza" as the whole final token, while the observed false positives
+    ("PIZZABUNN" pizza base, "PIZZADEIG" pizza dough, "Pizzaovn" pizza oven) all have
+    "pizza" as the FIRST half of a fused compound -- the same suffix-per-token matching
+    NON_FOOD_KEYWORDS relies on means only the real ready meals match."""
+    assert _is_ready_meal("BIG ONE PIZZA AMERICAN CLASSIC OG PEPPERONI") is True
+    assert _is_ready_meal("COOP PIZZA") is True
+    assert _is_ready_meal("DR. OETKER RUSTICA CHEESEBURGER PIZZA") is True
+    assert _is_ready_meal("PIZZABUNN PRIME RUND") is False
+    assert _is_ready_meal("FERSK PIZZADEIG") is False
+    assert _is_ready_meal("Pizzaovn") is False
+
+
+def test_is_ready_meal_detects_prepared_soup_and_lasagne():
+    """"suppe" matched two real prepared-soup products in the same live scan ("Mere
+    Mat" chicken/tomato soup, a creamy fish soup); "lasagne" is reasoned safe the same
+    way "pizza" is -- a raw lasagne-sheets product is labeled "lasagneplater" in
+    Norwegian, a token that does not end in "lasagne"."""
+    assert _is_ready_meal("MERE MAT KYLLING-/TOMATSUPPE") is True
+    assert _is_ready_meal("KREMET FISKESUPPE") is True
+    assert _is_ready_meal("LASAGNE") is True
+    assert _is_ready_meal("LASAGNEPLATER") is False
+
+
+def test_is_ready_meal_does_not_include_sandwich():
+    """Deliberately excluded despite being a spec example: the same live scan found
+    "WASA SANDWICH" (a crispbread/cracker product, not a ready-made sandwich) alongside
+    "COOP SANDWICH 12 PK" (a real one) -- not a safe deterministic keyword, left to the
+    LLM tier instead."""
+    assert "sandwich" not in READY_MEAL_KEYWORDS
+
+
+def test_is_ready_to_eat_detects_spiseklar_and_potetsalat():
+    """"spiseklar" is the generic Norwegian word for "ready to eat"; "potetsalat"
+    (potato salad) is an unambiguous prepared side -- both matched real headings in the
+    2026-07-16 live scan. A bare "salat" suffix is deliberately not listed since it
+    would also catch fresh lettuce/salad greens sold as a raw vegetable."""
+    assert _is_ready_to_eat("KYLLING SALATKJØTT SPISEKLAR") is True
+    assert _is_ready_to_eat("MILLS KLASSISK POTETSALAT") is True
+    assert _is_ready_to_eat("Potetsalat 1,4 kg") is True
+    assert _is_ready_to_eat("HODESALAT") is False
+    assert "salat" not in READY_TO_EAT_KEYWORDS
 
 
 def test_is_snack_detects_kvikk_lunsj():
@@ -241,17 +307,45 @@ def test_is_snack_does_not_false_positive_on_rice():
     assert "is" not in SNACK_KEYWORDS
 
 
-def test_classify_product_prioritizes_non_food_over_snack():
+def test_classify_product_prioritizes_non_food_over_everything_else():
     """A heading can't practically match both lists today, but classify_product()'s
-    documented priority (non_food, then snack, then main_food) should still hold if one
-    ever does."""
-    assert classify_product("NIVEA SUN -SOLKREM") == "non_food"
+    documented priority (non_food, then ready_meal, then ready_to_eat, then beverage,
+    then snack, then primary_ingredient) should still hold if one ever does."""
+    result = classify_product("NIVEA SUN -SOLKREM")
+    assert result["shopping_group"] == "non_food"
+    assert result["recipe_eligible"] is False
+    assert result["recipe_exclusion_reason"] == "non_food"
 
 
-def test_classify_product_labels_each_category():
-    assert classify_product("KYLLINGFILET 690 G") == "main_food"
-    assert classify_product("FREIA MELKESJOKOLADE") == "snack"
-    assert classify_product("LAMBI TOALETTPAPIR") == "non_food"
+def test_classify_product_labels_each_food_usage_class():
+    ordinary = classify_product("KYLLINGFILET 690 G")
+    assert ordinary["food_usage_class"] == "primary_ingredient"
+    assert ordinary["recipe_eligible"] is True
+    assert ordinary["recipe_exclusion_reason"] is None
+
+    snack = classify_product("FREIA MELKESJOKOLADE")
+    assert snack["food_usage_class"] == "snack_or_treat"
+    assert snack["recipe_eligible"] is False
+    assert snack["recipe_exclusion_reason"] == "snack_or_treat"
+
+    non_food = classify_product("LAMBI TOALETTPAPIR")
+    assert non_food["shopping_group"] == "non_food"
+    assert non_food["recipe_eligible"] is False
+
+    beverage = classify_product("COCA-COLA 1,5L")
+    assert beverage["food_usage_class"] == "beverage"
+    assert beverage["recipe_eligible"] is False
+    assert beverage["recipe_exclusion_reason"] == "beverage"
+
+    ready_meal = classify_product("BIG ONE PIZZA")
+    assert ready_meal["food_usage_class"] == "ready_meal"
+    assert ready_meal["recipe_eligible"] is False
+    assert ready_meal["recipe_exclusion_reason"] == "finished_meal"
+
+    ready_to_eat = classify_product("MILLS KLASSISK POTETSALAT")
+    assert ready_to_eat["food_usage_class"] == "ready_to_eat"
+    assert ready_to_eat["recipe_eligible"] is False
+    assert ready_to_eat["recipe_exclusion_reason"] == "finished_meal"
 
 
 def _offer(heading, price, pre_price=None, store_name="Kiwi", store_logo="k.svg", quantity=None):
@@ -295,9 +389,9 @@ def test_find_discounted_products_ignores_a_pre_price_that_is_not_actually_highe
 
 def test_find_discounted_products_includes_non_food_and_snack_items_tagged_by_category():
     """Non-food and snack items are no longer dropped -- the app shows them in their
-    own tab/menu instead of discarding them -- but each gets the category label that
-    lets a caller separate them out (pipeline_server.py excludes non-"main_food" from
-    what it feeds into recipe generation)."""
+    own tab/menu instead of discarding them -- but each gets the legacy category label
+    (for the app's existing Food/Non-food split) and the Epic A classification fields
+    (for pipeline_server.py's recipe_eligible gate)."""
     client = MagicMock()
     client.get_store_offers.return_value = [
         _offer("KYLLINGFILET", 80.0),
@@ -310,8 +404,13 @@ def test_find_discounted_products_includes_non_food_and_snack_items_tagged_by_ca
     by_name = {r["product_name"]: r for r in result}
     assert set(by_name) == {"KYLLINGFILET", "NIVEA SUN -SOLKREM", "FREIA MELKESJOKOLADE"}
     assert by_name["KYLLINGFILET"]["category"] == "main_food"
+    assert by_name["KYLLINGFILET"]["recipe_eligible"] is True
     assert by_name["NIVEA SUN -SOLKREM"]["category"] == "non_food"
+    assert by_name["NIVEA SUN -SOLKREM"]["shopping_group"] == "non_food"
+    assert by_name["NIVEA SUN -SOLKREM"]["recipe_eligible"] is False
     assert by_name["FREIA MELKESJOKOLADE"]["category"] == "snack"
+    assert by_name["FREIA MELKESJOKOLADE"]["food_usage_class"] == "snack_or_treat"
+    assert by_name["FREIA MELKESJOKOLADE"]["recipe_eligible"] is False
 
 
 def test_find_discounted_products_excludes_offers_missing_a_price():

@@ -55,6 +55,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from .product_classification import ProductClassification, build_classification, legacy_category
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.etilbudsavis.dk/v2"
@@ -154,11 +156,66 @@ SNACK_KEYWORDS = [
     "sjokolade",
     "godteri", "godis", "smågodt", "vingummi", "lakris",
     "iskrem", "softis",
-    "brus", "cola", "iste",
     "kjeks",
     "snacks",
     "popcorn",
     "smarties", "nidar", "brynild", "cloetta", "squashies", "kvikk",
+]
+
+# Epic A splits "food but not a recipe ingredient" into two food_usage_class
+# values instead of one flat "snack" bucket: beverage vs. snack_or_treat (see
+# product_classification.py). brus/cola/iste moved here from SNACK_KEYWORDS
+# above -- they were already there under the old 3-way scheme but are drinks,
+# not treats. juice/smoothie added after a live scan (2026-07-16) of all 822
+# current offers across the 11 stores below turned up "RÅ JUICE",
+# "NYPRESSET APPELSINJUICE" and 9 distinct "SMOOTHIE"/"FROOSH SMOOTHIE"-style
+# headings, all unambiguous beverages.
+BEVERAGE_KEYWORDS = [
+    "brus", "cola", "iste",
+    "juice", "smoothie",
+]
+
+# Epic A food_usage_class="ready_meal": "a substantially complete meal intended
+# to be heated or consumed directly" (frozen pizza, ready-made lasagne,
+# microwave curry, prepared soup, ...). Verified against the same live 822-item
+# scan referenced above:
+# - "pizza" is safe as a whole-token suffix match specifically *because* real
+#   false positives in that scan ("PIZZABUNN" pizza base, "PIZZADEIG" pizza
+#   dough, "Pizzaovn" pizza oven) all have "pizza" as the FIRST half of a fused
+#   compound, so none of those tokens end in "pizza" -- only genuine frozen
+#   pizzas ("BIG ONE PIZZA", "COOP PIZZA", "...CHEESEBURGER PIZZA") had "pizza"
+#   as the token itself. Same suffix-per-token matching as NON_FOOD_KEYWORDS
+#   below relies on for exactly this reason.
+# - "suppe" matched two real prepared-soup products in that scan ("Mere Mat"
+#   chicken/tomato soup, a creamy fish soup) with no raw soup-mix false
+#   positives observed (those are typically labeled "suppemiks"/"pulver" in
+#   Norwegian, not bare "-suppe").
+# - "lasagne" wasn't disprovable as unsafe in the live sample (only one bare
+#   "LASAGNE" heading, no disambiguating text) but is reasoned safe the same
+#   way "pizza" is: a raw lasagne-sheets product is labeled "lasagneplater" in
+#   Norwegian, a token that does not end in "lasagne".
+# Deliberately NOT included despite spec examples: "sandwich" -- the same live
+# scan found "WASA SANDWICH" (a crispbread/cracker product, not a ready-made
+# sandwich) alongside "COOP SANDWICH 12 PK" (a real one), so this keyword isn't
+# a safe deterministic signal; left to the LLM tier instead (see
+# product_classifier.py). "gryte" (stew) and "wok" were excluded for the same
+# reason -- both matched real Norwegian headings that read more like
+# raw meal-kit ingredients than a fully-cooked ready meal.
+READY_MEAL_KEYWORDS = [
+    "pizza", "lasagne", "suppe",
+]
+
+# Epic A food_usage_class="ready_to_eat": "a finished food product that is not
+# normally an input into everyday meal generation" (prepared salad bowl,
+# breakfast yoghurt cup, ...). "spiseklar" is the generic Norwegian word for
+# "ready to eat" and matched a real heading directly in the live scan above
+# ("...KYLLING SALATKJØTT SPISEKLAR"). "potetsalat" (potato salad) matched
+# twice ("MILLS KLASSISK POTETSALAT", "Potetsalat 1,4 kg") and is unambiguous --
+# unlike a bare "salat" suffix, which would also catch fresh lettuce/salad
+# greens sold as a raw vegetable (a primary_ingredient, not ready-to-eat) and
+# was deliberately left out for that reason.
+READY_TO_EAT_KEYWORDS = [
+    "spiseklar", "potetsalat",
 ]
 
 
@@ -224,35 +281,82 @@ def _tokens(heading: str) -> List[str]:
     return re.findall(r"[^\s\-/]+", heading.lower())
 
 
-def _is_non_food(heading: str) -> bool:
-    """Real flyers mix in a handful of non-food items alongside groceries -- checked as
-    a suffix against each individual word/token in the heading (split on
-    whitespace/hyphen/slash), not a plain substring of the whole string, so this can't
-    accidentally match a food word that happens to contain a shorter non-food word
-    inside it (see NON_FOOD_KEYWORDS and the module docstring for the "iskrem" case)."""
+def _matches_any_keyword(heading: str, keywords: List[str]) -> bool:
+    """Shared suffix-per-token matching every keyword list below relies on: checked
+    against each individual word/token in the heading (split on whitespace/hyphen/
+    slash), not a plain substring of the whole string, so this can't accidentally
+    match a food word that happens to contain a shorter keyword inside it (see
+    NON_FOOD_KEYWORDS' module docstring for the "iskrem" case, and READY_MEAL_KEYWORDS'
+    comment above for why this same property is what makes "pizza" safe against
+    "pizzabunn"/"pizzadeig")."""
     tokens = _tokens(heading)
-    return any(token.endswith(kw) for token in tokens for kw in NON_FOOD_KEYWORDS)
+    return any(token.endswith(kw) for token in tokens for kw in keywords)
+
+
+def _is_non_food(heading: str) -> bool:
+    """Real flyers mix in a handful of non-food items alongside groceries -- see
+    NON_FOOD_KEYWORDS and _matches_any_keyword() for the suffix-per-token matching
+    this relies on."""
+    return _matches_any_keyword(heading, NON_FOOD_KEYWORDS)
+
+
+def _is_ready_meal(heading: str) -> bool:
+    """See READY_MEAL_KEYWORDS for the live-data reasoning behind this list."""
+    return _matches_any_keyword(heading, READY_MEAL_KEYWORDS)
+
+
+def _is_ready_to_eat(heading: str) -> bool:
+    """See READY_TO_EAT_KEYWORDS for the live-data reasoning behind this list."""
+    return _matches_any_keyword(heading, READY_TO_EAT_KEYWORDS)
+
+
+def _is_beverage(heading: str) -> bool:
+    """See BEVERAGE_KEYWORDS -- split out from SNACK_KEYWORDS under Epic A's richer
+    food_usage_class taxonomy (a drink isn't a "treat")."""
+    return _matches_any_keyword(heading, BEVERAGE_KEYWORDS)
 
 
 def _is_snack(heading: str) -> bool:
-    """Same suffix-per-token matching as _is_non_food, against SNACK_KEYWORDS instead --
-    flags food items that aren't useful as recipe ingredients (candy, chips, soda, ice
-    cream, ...)."""
-    tokens = _tokens(heading)
-    return any(token.endswith(kw) for token in tokens for kw in SNACK_KEYWORDS)
+    """Flags food items that are candy/chips/treats specifically -- see
+    SNACK_KEYWORDS. Beverages moved to _is_beverage() above."""
+    return _matches_any_keyword(heading, SNACK_KEYWORDS)
 
 
-def classify_product(heading: str) -> str:
-    """Coarse category label for a flyer heading -- "non_food", "snack", or
-    "main_food" (in that priority order, since a handful of SNACK_KEYWORDS/
-    NON_FOOD_KEYWORDS entries could theoretically both match one heading and non-food
-    is the stronger claim). Nothing is dropped based on this label; see module
-    docstring for how each category is used downstream."""
+def classify_product(heading: str) -> ProductClassification:
+    """Epic A's replacement for the old flat "non_food"/"snack"/"main_food" string:
+    a full ProductClassification (shopping_group, food_usage_class, meal_role,
+    recipe_eligible, recipe_exclusion_reason) derived purely from keyword lists --
+    the cheap, deterministic first pass every discovered product gets before the
+    permanent classification cache or the LLM tier ever sees it (see
+    refresh_discounts.py).
+
+    Checked in priority order (non_food > ready_meal > ready_to_eat > beverage >
+    snack_or_treat), since a handful of entries across these lists could
+    theoretically both match one heading and non_food is the strongest claim.
+    Nothing beyond that ordering is dropped or hidden based on this label --
+    see NON_FOOD_KEYWORDS' module docstring for how each category is used
+    downstream.
+
+    A heading matching none of the keyword lists defaults to "primary_ingredient"
+    (recipe_eligible=True) rather than "unknown" -- unlike the LLM tier, this
+    heuristic has no way to actively confirm a product is a good ingredient, only
+    to flag ones it's confident aren't, so "no red flag found" defaults to
+    eligible exactly like the old scheme's "main_food" default did. Distinguishing
+    primary_ingredient from supporting_ingredient beyond that default, and
+    assigning a real meal_role, is left to the LLM tier for any product that
+    reaches it (see product_classifier.py) -- this function only ever needs to
+    get eligibility right, not the finer-grained fields."""
     if _is_non_food(heading):
-        return "non_food"
+        return build_classification("non_food", "not_applicable")
+    if _is_ready_meal(heading):
+        return build_classification("food", "ready_meal")
+    if _is_ready_to_eat(heading):
+        return build_classification("food", "ready_to_eat")
+    if _is_beverage(heading):
+        return build_classification("food", "beverage")
     if _is_snack(heading):
-        return "snack"
-    return "main_food"
+        return build_classification("food", "snack_or_treat")
+    return build_classification("food", "primary_ingredient")
 
 
 def find_discounted_products(
@@ -266,13 +370,18 @@ def find_discounted_products(
     explicit "was X" price. Each item gets discount_pct/reference_price attached only
     when the retailer published an explicit pre_price that is genuinely higher than
     the current price (a real, official discount, never inferred) -- otherwise both
-    are None. Every item also gets a `category` label ("non_food", "snack", or
-    "main_food" -- see classify_product()); nothing is dropped based on it, callers
-    decide what to do with each category (e.g. pipeline_server.py's /recipes/discounted
-    only feeds "main_food" items into recipe generation, but still returns every
-    category in the response for the app's own tabs/menus). Returns everything sorted
-    with confirmed discounts first (highest percentage first); everything else follows
-    in fetch order.
+    are None. Every item also gets the Epic A classification fields (`shopping_group`,
+    `food_usage_class`, `meal_role`, `recipe_eligible`, `recipe_exclusion_reason` --
+    see classify_product()) from the keyword heuristic; refresh_discounts.py upgrades
+    these with the permanent classification cache and the LLM tier before a snapshot
+    is saved. `category` is kept alongside as the old 3-way "non_food"/"snack"/
+    "main_food" label (see product_classification.legacy_category()) purely for
+    backward compatibility with existing callers (e.g. the mobile app's Food/Non-food
+    tab split) -- pipeline_server.py's /recipes/discounted itself now gates recipe
+    generation on `recipe_eligible`, not `category`. Nothing is dropped based on any
+    of this; callers decide what to do with each classification. Returns everything
+    sorted with confirmed discounts first (highest percentage first); everything else
+    follows in fetch order.
 
     One request per store total -- no separate price-history call needed, since the
     discount (when the retailer publishes one) comes directly in the same response.
@@ -307,9 +416,15 @@ def find_discounted_products(
 
             dealer = offer.get("dealer") or offer.get("branding") or {}
             unit_price_result = _compute_unit_price(price, offer.get("quantity"))
+            classification = classify_product(heading)
             discovered.append({
                 "product_name": heading,
-                "category": classify_product(heading),
+                "category": legacy_category(classification),
+                "shopping_group": classification["shopping_group"],
+                "food_usage_class": classification["food_usage_class"],
+                "meal_role": classification["meal_role"],
+                "recipe_eligible": classification["recipe_eligible"],
+                "recipe_exclusion_reason": classification["recipe_exclusion_reason"],
                 "current_price": price,
                 "reference_price": reference_price,
                 "discount_pct": discount_pct,

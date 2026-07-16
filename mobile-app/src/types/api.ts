@@ -47,16 +47,49 @@ export interface IngredientsResponse {
   error: string | null;
 }
 
-// Coarse label from grocery_discounts.classify_product() -- "non_food" items (soap,
-// batteries, ...) and "snack" items (candy, chips, soda, ...) are still returned
-// alongside "main_food", just excluded from the ingredient list the backend feeds into
-// recipe generation. Optional/nullable so older cached rows (pre-category) don't break
-// callers that don't care about it.
+// Coarse label derived from the richer Epic A classification below (see the backend's
+// product_classification.legacy_category()) -- "non_food" items (soap, batteries, ...)
+// and "snack" items (candy, chips, soda, ready meals, ...) are still returned alongside
+// "main_food", just excluded from the ingredient list the backend feeds into recipe
+// generation. Optional/nullable so older cached rows (pre-category) don't break callers
+// that don't care about it.
 export type DiscountedProductCategory = "main_food" | "snack" | "non_food";
+
+// Epic A's richer classification -- not yet consumed by any screen (that's Epic B/C/E
+// territory), added here purely so this file stays hand-synced with the backend's
+// actual response shape. See src/rag/product_classification.py for what each value
+// means; `recipe_eligible` is what /recipes/discounted now gates recipe generation on,
+// replacing the old `category === "main_food"` check.
+export type ShoppingGroup = "food" | "non_food";
+export type FoodUsageClass =
+  | "primary_ingredient"
+  | "supporting_ingredient"
+  | "ready_meal"
+  | "ready_to_eat"
+  | "beverage"
+  | "snack_or_treat"
+  | "unknown"
+  | "not_applicable";
+export type MealRole =
+  | "protein"
+  | "carbohydrate"
+  | "vegetable"
+  | "fruit"
+  | "dairy"
+  | "pantry"
+  | "sauce_or_condiment"
+  | "bread_or_bakery"
+  | "other"
+  | "not_applicable";
 
 export interface DiscountedProduct {
   product_name: string;
   category: DiscountedProductCategory | null;
+  shopping_group: ShoppingGroup | null;
+  food_usage_class: FoodUsageClass | null;
+  meal_role: MealRole | null;
+  recipe_eligible: boolean | null;
+  recipe_exclusion_reason: string | null;
   current_price: number;
   // null when we don't have enough price history to compute a meaningful discount —
   // the backend now returns every product per store, not just confirmed discounts, so

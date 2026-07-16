@@ -16,11 +16,25 @@ any wake-up catches up automatically within that shorter window, while a healthy
 cron still refreshes once a day exactly as before -- the gate makes the extra invocations
 a cheap no-op rather than redundant Tjek sweeps.
 
-Also runs LLM-based category classification (product_classifier.py) for any product
-name discounts_store's product_categories cache hasn't seen before -- see that
-module's docstring for why this is a same-run-only latency cost (never touches
-/recipes/discounted's request path) and why it never permanently sticks a product with
-a worse fallback classification just because Ollama was briefly unreachable.
+Epic A classification pipeline (Task A3's processing order), applied once per scan:
+  1. Manual overrides (product_classification.load_manual_overrides()) -- always win,
+     re-applied and re-cached every run so an override added today takes effect
+     immediately even for products already cached under a different classification.
+  2. Deterministic keyword heuristic (grocery_discounts.classify_product()) -- already
+     computed inline for every item by find_discounted_products(); the baseline used
+     for anything the two steps below don't upgrade.
+  3. Permanent classification cache (discounts_store.product_classifications) -- a
+     product already classified by the LLM (or previously overridden) is never
+     re-sent to it.
+  4. The LLM classifier (product_classifier.py) for whatever's left: names that are
+     neither manually overridden nor already cached. Its response is schema-validated
+     before it's trusted (see product_classification.validate_llm_entry()) and a
+     genuinely uncertain verdict (confidence="low") collapses to food_usage_class=
+     "unknown", which recipe_eligible is always False for -- see product_classification
+     .build_classification() for why this is computed once, not decided per-caller.
+  5. Whatever the LLM classified successfully is stored permanently; a call failure or
+     invalid entry is simply left uncached so it's retried on the next refresh instead
+     of poisoning the cache with a low-confidence guess (see product_classifier.py).
 
 Run with: python -m rag.refresh_discounts
 """
@@ -29,13 +43,33 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from .config import RecipeRAGConfig
-from .discounts_store import get_cached_categories, get_latest_snapshot, save_categories, save_snapshot
-from .grocery_discounts import TjekClient, find_discounted_products
+from .discounts_store import (
+    get_cached_classifications,
+    get_latest_snapshot,
+    save_classifications,
+    save_snapshot,
+)
 from .generator import RecipeGenerator
+from .grocery_discounts import TjekClient, find_discounted_products
+from .product_classification import CLASSIFIER_VERSION, ProductClassification, legacy_category, load_manual_overrides
 from .product_classifier import classify_new_products
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _apply_classification(item: dict, classification: ProductClassification) -> None:
+    """Overwrites a discovered item's classification fields (in place) with a more
+    trustworthy result than the keyword heuristic already attached, including the
+    legacy `category` label so it never drifts out of sync with the richer fields
+    underneath it (e.g. a heuristic false-negative the LLM catches as a snack must
+    also flip `category` from "main_food" to "snack")."""
+    item["shopping_group"] = classification["shopping_group"]
+    item["food_usage_class"] = classification["food_usage_class"]
+    item["meal_role"] = classification["meal_role"]
+    item["recipe_eligible"] = classification["recipe_eligible"]
+    item["recipe_exclusion_reason"] = classification["recipe_exclusion_reason"]
+    item["category"] = legacy_category(classification)
 
 
 def main() -> None:
@@ -65,17 +99,41 @@ def main() -> None:
 
     client = TjekClient()
     discounts = find_discounted_products(client)
+    scanned_at = datetime.now(timezone.utc).isoformat()
 
-    # Every item already has a keyword-heuristic category from find_discounted_products()
-    # (classify_product() in grocery_discounts.py) -- the LLM classifier below only
-    # *upgrades* whichever product names it can confidently classify, cached forever so
-    # each name only ever costs one LLM call across all future refreshes. Anything the
-    # LLM step can't cover this run (Ollama down, new names beyond what got classified,
-    # ...) simply keeps its keyword-heuristic category for now.
+    # Step 1: manual overrides -- always win, re-cached every run (source=
+    # "manual_override") so J2's "percentage manually overridden" tracking stays
+    # accurate even for products that were previously classified a different way.
+    overrides = load_manual_overrides()
     product_names = [d["product_name"] for d in discounts]
-    cached_categories = get_cached_categories(config.DISCOUNTS_DB_PATH, product_names)
-    uncached_names = [name for name in product_names if name not in cached_categories]
+    matched_overrides = {name: overrides[name] for name in product_names if name in overrides}
+    if matched_overrides:
+        save_classifications(
+            config.DISCOUNTS_DB_PATH, matched_overrides,
+            classification_source="manual_override", classified_at=scanned_at,
+            classifier_version=CLASSIFIER_VERSION, classification_confidence="high",
+        )
+        for d in discounts:
+            if d["product_name"] in matched_overrides:
+                _apply_classification(d, matched_overrides[d["product_name"]])
 
+    # Step 2 already happened inline: find_discounted_products() ran the keyword
+    # heuristic (grocery_discounts.classify_product()) for every item. That's the
+    # baseline for anything not covered by an override or the steps below.
+
+    # Step 3: permanent classification cache -- skip the LLM entirely for anything
+    # already classified by a previous run (whether that earlier run used the LLM
+    # or a manual override that's since been removed from the override file).
+    remaining_names = [name for name in product_names if name not in matched_overrides]
+    cached = get_cached_classifications(config.DISCOUNTS_DB_PATH, remaining_names)
+    for d in discounts:
+        name = d["product_name"]
+        if name in cached:
+            _apply_classification(d, cached[name])
+
+    # Step 4: send whatever's left -- never manually overridden, never cached -- to
+    # the LLM classifier.
+    uncached_names = [name for name in remaining_names if name not in cached]
     if uncached_names:
         logger.info(f"Classifying {len(uncached_names)} new product name(s) via {config.CATEGORY_LLM_MODEL}...")
         generator = RecipeGenerator(
@@ -86,21 +144,28 @@ def main() -> None:
         )
         newly_classified = classify_new_products(generator, uncached_names)
         if newly_classified:
-            save_categories(config.DISCOUNTS_DB_PATH, newly_classified)
-            cached_categories.update(newly_classified)
+            # Step 5: store permanently (source="llm"). Confidence isn't tracked
+            # per-item here since classify_new_products() already folded a
+            # self-reported "low" confidence into food_usage_class="unknown" (see
+            # product_classification.validate_llm_entry()) before returning --
+            # anything that reaches this point was at least medium-confidence.
+            save_classifications(
+                config.DISCOUNTS_DB_PATH, newly_classified,
+                classification_source="llm", classified_at=scanned_at,
+                classifier_version=CLASSIFIER_VERSION, classification_confidence="medium",
+            )
+            for d in discounts:
+                if d["product_name"] in newly_classified:
+                    _apply_classification(d, newly_classified[d["product_name"]])
         logger.info(f"LLM classified {len(newly_classified)}/{len(uncached_names)} new product name(s).")
 
-    for d in discounts:
-        llm_category = cached_categories.get(d["product_name"])
-        if llm_category:
-            d["category"] = llm_category
-
-    scanned_at = datetime.now(timezone.utc).isoformat()
     save_snapshot(config.DISCOUNTS_DB_PATH, discounts, scanned_at)
     with_discount = sum(1 for d in discounts if d.get("discount_pct") is not None)
+    eligible = sum(1 for d in discounts if d.get("recipe_eligible"))
     logger.info(
         f"Discount scan complete: {len(discounts)} products found, "
-        f"{with_discount} with a confirmed discount, cached at {scanned_at}"
+        f"{with_discount} with a confirmed discount, {eligible} recipe-eligible, "
+        f"cached at {scanned_at}"
     )
 
 

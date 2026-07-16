@@ -86,7 +86,7 @@ def test_recipes_discounted_always_normalizes_unconditionally(monkeypatch):
     monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
     monkeypatch.setattr(
         pipeline_server, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "REKER I LØSVEKT"}], "2026-07-09T06:00:00+00:00"),
+        lambda db_path: ([{"product_name": "REKER I LØSVEKT", "recipe_eligible": True}], "2026-07-09T06:00:00+00:00"),
     )
 
     recipes_discounted(max_results=10, include_recipes=True)
@@ -94,35 +94,34 @@ def test_recipes_discounted_always_normalizes_unconditionally(monkeypatch):
     assert seen["normalize"] is True
 
 
-def test_recipes_discounted_treats_a_present_but_none_category_as_main_food(monkeypatch):
-    """Regression test: get_latest_snapshot() always includes a "category" key (it's one
-    of discounts_store._COLUMNS) -- for a row scanned before this column existed, its
-    value is None, not an absent key. A naive `d.get("category", "main_food")` would
-    never actually fall back (the key is present), silently treating every such row as
-    excluded and returning zero recipes right after this feature's own DB migration
-    until the next scheduled Tjek sweep repopulates real categories."""
-    seen = {}
+def test_recipes_discounted_treats_a_missing_recipe_eligible_field_as_ineligible(monkeypatch):
+    """Regression guard for the Epic A migration: a snapshot row written before
+    recipe_eligible existed (or a test fixture that doesn't set it) has no such key at
+    all. `d.get("recipe_eligible")` must fall back to a falsy None rather than crash or
+    default to eligible -- get_latest_snapshot() itself coerces this to a real False for
+    a live DB (see discounts_store.py), and the next scheduled refresh reclassifies the
+    row properly either way."""
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("find_recipes_or_generate should not be called with no eligible items")
 
-    def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
-        seen["ingredients"] = ingredients
-        return _fake_result()
-
-    monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
+    monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fail_if_called)
     monkeypatch.setattr(
         pipeline_server, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "REKER I LØSVEKT", "category": None}], "2026-07-15T06:00:00+00:00"),
+        lambda db_path: ([{"product_name": "REKER I LØSVEKT"}], "2026-07-15T06:00:00+00:00"),
     )
 
     result = recipes_discounted(max_results=10, include_recipes=True)
 
-    assert seen["ingredients"] == ["REKER I LØSVEKT"]
-    assert result["recipes"] == []  # from _fake_result(), not the empty-skip path
+    assert result["recipes"] == []
+    assert result["source"] is None
+    assert len(result["discounted_ingredients"]) == 1
 
 
-def test_recipes_discounted_excludes_non_main_food_from_the_recipe_query(monkeypatch):
-    """Snack and non-food items stay in discounted_ingredients (the app shows them in
-    their own tab/menu) but must never reach find_recipes_or_generate() -- neither is a
-    sensible recipe ingredient."""
+def test_recipes_discounted_excludes_ineligible_items_from_the_recipe_query(monkeypatch):
+    """Snack/non-food/ready-meal items stay in discounted_ingredients (the app shows
+    them in their own tab/menu) but must never reach find_recipes_or_generate() -- none
+    of them are a sensible recipe ingredient (Epic A: gated on recipe_eligible, not the
+    legacy category string)."""
     seen = {}
 
     def fake_find_recipes_or_generate(ingredients, max_results=10, normalize=False, language="en"):
@@ -134,9 +133,10 @@ def test_recipes_discounted_excludes_non_main_food_from_the_recipe_query(monkeyp
         pipeline_server, "get_latest_snapshot",
         lambda db_path: (
             [
-                {"product_name": "KYLLINGFILET", "category": "main_food"},
-                {"product_name": "FREIA MELKESJOKOLADE", "category": "snack"},
-                {"product_name": "LAMBI TOALETTPAPIR", "category": "non_food"},
+                {"product_name": "KYLLINGFILET", "category": "main_food", "recipe_eligible": True},
+                {"product_name": "FREIA MELKESJOKOLADE", "category": "snack", "recipe_eligible": False},
+                {"product_name": "LAMBI TOALETTPAPIR", "category": "non_food", "recipe_eligible": False},
+                {"product_name": "BIG ONE PIZZA", "category": "main_food", "recipe_eligible": False},
             ],
             "2026-07-15T06:00:00+00:00",
         ),
@@ -145,22 +145,25 @@ def test_recipes_discounted_excludes_non_main_food_from_the_recipe_query(monkeyp
     result = recipes_discounted(max_results=10, include_recipes=True)
 
     assert seen["ingredients"] == ["KYLLINGFILET"]
-    # the full, unfiltered list (all three categories) is still returned for the app
-    assert len(result["discounted_ingredients"]) == 3
+    # the full, unfiltered list (every category, including an ineligible "main_food"
+    # ready meal) is still returned for the app
+    assert len(result["discounted_ingredients"]) == 4
 
 
-def test_recipes_discounted_skips_generation_pass_when_nothing_is_main_food(monkeypatch):
-    """If every currently-cached item happens to be a snack/non-food (e.g. right after
-    a scan dominated by candy aisle offers), there's nothing sensible to feed the recipe
-    generator -- must skip that call entirely rather than pass an empty ingredient list
-    into it."""
+def test_recipes_discounted_skips_generation_pass_when_nothing_is_recipe_eligible(monkeypatch):
+    """If everything currently cached is ineligible (e.g. right after a scan dominated
+    by candy aisle offers), there's nothing sensible to feed the recipe generator --
+    must skip that call entirely rather than pass an empty ingredient list into it."""
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("find_recipes_or_generate should not be called with no main_food items")
+        raise AssertionError("find_recipes_or_generate should not be called with no eligible items")
 
     monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fail_if_called)
     monkeypatch.setattr(
         pipeline_server, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "FREIA MELKESJOKOLADE", "category": "snack"}], "2026-07-15T06:00:00+00:00"),
+        lambda db_path: (
+            [{"product_name": "FREIA MELKESJOKOLADE", "category": "snack", "recipe_eligible": False}],
+            "2026-07-15T06:00:00+00:00",
+        ),
     )
 
     result = recipes_discounted(max_results=10, include_recipes=True)
@@ -277,7 +280,10 @@ def test_recipes_discounted_forwards_language(monkeypatch):
     monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
     monkeypatch.setattr(
         pipeline_server, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "KYLLINGFILET", "category": "main_food"}], "2026-07-15T06:00:00+00:00"),
+        lambda db_path: (
+            [{"product_name": "KYLLINGFILET", "category": "main_food", "recipe_eligible": True}],
+            "2026-07-15T06:00:00+00:00",
+        ),
     )
 
     recipes_discounted(max_results=10, include_recipes=True, language="no")
@@ -295,7 +301,10 @@ def test_recipes_discounted_defaults_to_english_language(monkeypatch):
     monkeypatch.setattr(pipeline_server.pipeline, "find_recipes_or_generate", fake_find_recipes_or_generate)
     monkeypatch.setattr(
         pipeline_server, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "KYLLINGFILET", "category": "main_food"}], "2026-07-15T06:00:00+00:00"),
+        lambda db_path: (
+            [{"product_name": "KYLLINGFILET", "category": "main_food", "recipe_eligible": True}],
+            "2026-07-15T06:00:00+00:00",
+        ),
     )
 
     recipes_discounted(max_results=10, include_recipes=True)

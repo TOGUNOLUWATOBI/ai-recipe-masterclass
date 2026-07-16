@@ -1,0 +1,14 @@
+{
+  "_comment": "Epic A5 manual override list -- exact, case-sensitive Tjek product-name match. Manual overrides always take precedence over the heuristic and LLM classifiers (see product_classification.load_manual_overrides()). Add an entry here instead of tweaking prompts or keyword lists to fix one specific product.",
+
+  "COCA-COLA ZERO": {
+    "shopping_group": "food",
+    "food_usage_class": "beverage",
+    "meal_role": "not_applicable"
+  },
+  "HAKKEDE TOMATER": {
+    "shopping_group": "food",
+    "food_usage_class": "supporting_ingredient",
+    "meal_role": "pantry"
+  }
+}
