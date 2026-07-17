@@ -4,6 +4,7 @@ Covers Epic A's full processing order: manual overrides (always win) -> permanen
 cache (only unseen names go further) -> the LLM classifier for whatever's left -> the
 result overriding the keyword-heuristic classification already on each item."""
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -33,11 +34,20 @@ def _patch_tjek_client(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _patch_open_connection(monkeypatch):
+    # main() now opens one shared connection up front (see discounts_store.
+    # open_connection()) and threads it through every call below via conn= -- every
+    # one of those calls is itself mocked out in these tests, so a dummy stand-in via
+    # nullcontext keeps main() from opening a real sqlite file during a unit test run.
+    monkeypatch.setattr(refresh_discounts, "open_connection", lambda db_path: nullcontext(MagicMock()))
+
+
+@pytest.fixture(autouse=True)
 def _stale_cache(monkeypatch):
     # Always take the "proceed with sweep" branch -- these tests care about the
     # classification step, not the staleness gate (see test_refresh_discounts.py).
     old_iso = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
-    monkeypatch.setattr(refresh_discounts, "get_latest_snapshot", lambda db_path: ([], old_iso))
+    monkeypatch.setattr(refresh_discounts, "get_latest_snapshot", lambda db_path, conn=None: ([], old_iso))
     monkeypatch.setattr(refresh_discounts, "save_snapshot", MagicMock())
 
 
@@ -71,7 +81,7 @@ def test_only_uncached_product_names_are_sent_to_the_llm(monkeypatch):
     )
     monkeypatch.setattr(
         refresh_discounts, "get_cached_classifications",
-        lambda db_path, names: {"KYLLINGFILET": _classification()},
+        lambda db_path, names, conn=None: {"KYLLINGFILET": _classification()},
     )
     mock_generator_cls = MagicMock()
     monkeypatch.setattr(refresh_discounts, "RecipeGenerator", mock_generator_cls)
@@ -95,7 +105,7 @@ def test_llm_classification_overrides_the_keyword_classification(monkeypatch):
         refresh_discounts, "find_discounted_products",
         MagicMock(return_value=[_item("SØRLANDSIS")]),
     )
-    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names: {})
+    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names, conn=None: {})
     monkeypatch.setattr(refresh_discounts, "RecipeGenerator", MagicMock())
     monkeypatch.setattr(
         refresh_discounts, "classify_new_products",
@@ -121,7 +131,7 @@ def test_items_the_llm_did_not_classify_keep_their_keyword_classification(monkey
         refresh_discounts, "find_discounted_products",
         MagicMock(return_value=[_item("UKJENT VARE")]),
     )
-    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names: {})
+    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names, conn=None: {})
     monkeypatch.setattr(refresh_discounts, "RecipeGenerator", MagicMock())
     # Simulates a failed/partial LLM call -- product_classifier.py's own contract is
     # to omit anything it couldn't classify, never guess.
@@ -141,7 +151,7 @@ def test_newly_classified_products_are_persisted_to_the_cache(monkeypatch):
         refresh_discounts, "find_discounted_products",
         MagicMock(return_value=[_item("NY VARE")]),
     )
-    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names: {})
+    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names, conn=None: {})
     monkeypatch.setattr(refresh_discounts, "RecipeGenerator", MagicMock())
     new_classification = _classification(food_usage_class="snack_or_treat", recipe_eligible=False, recipe_exclusion_reason="snack_or_treat")
     monkeypatch.setattr(refresh_discounts, "classify_new_products", MagicMock(return_value={"NY VARE": new_classification}))
@@ -167,7 +177,7 @@ def test_skips_llm_entirely_when_every_product_name_is_already_cached(monkeypatc
     )
     monkeypatch.setattr(
         refresh_discounts, "get_cached_classifications",
-        lambda db_path, names: {"KYLLINGFILET": _classification()},
+        lambda db_path, names, conn=None: {"KYLLINGFILET": _classification()},
     )
     mock_generator_cls = MagicMock()
     monkeypatch.setattr(refresh_discounts, "RecipeGenerator", mock_generator_cls)
@@ -194,7 +204,7 @@ def test_manual_override_always_wins_and_is_re_cached(monkeypatch):
         refresh_discounts, "find_discounted_products",
         MagicMock(return_value=[_item("COCA-COLA ZERO", category="main_food", recipe_eligible=True)]),
     )
-    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names: {})
+    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names, conn=None: {})
     mock_generator_cls = MagicMock()
     monkeypatch.setattr(refresh_discounts, "RecipeGenerator", mock_generator_cls)
     mock_classify = MagicMock()
@@ -216,6 +226,37 @@ def test_manual_override_always_wins_and_is_re_cached(monkeypatch):
         if call.kwargs.get("classification_source") == "manual_override"
     )
     assert "COCA-COLA ZERO" in override_call.args[1]
+
+
+def test_unchanged_manual_override_is_not_rewritten_to_the_cache(monkeypatch):
+    """Efficiency guard: when the cached classification for a name already matches its
+    manual override exactly (the common case -- the override file rarely changes
+    between runs), there's nothing new to persist. It must still be applied to the
+    item in this run's snapshot, just without a redundant DB write."""
+    override = _classification(food_usage_class="beverage", meal_role="not_applicable", recipe_eligible=False, recipe_exclusion_reason="beverage")
+    monkeypatch.setattr(refresh_discounts, "load_manual_overrides", MagicMock(return_value={"COCA-COLA ZERO": override}))
+    monkeypatch.setattr(
+        refresh_discounts, "find_discounted_products",
+        MagicMock(return_value=[_item("COCA-COLA ZERO", category="main_food", recipe_eligible=True)]),
+    )
+    # already cached with the exact same values as the override
+    monkeypatch.setattr(refresh_discounts, "get_cached_classifications", lambda db_path, names, conn=None: {"COCA-COLA ZERO": override})
+    mock_save_classifications = MagicMock()
+    monkeypatch.setattr(refresh_discounts, "save_classifications", mock_save_classifications)
+    mock_save_snapshot = MagicMock()
+    monkeypatch.setattr(refresh_discounts, "save_snapshot", mock_save_snapshot)
+
+    refresh_discounts.main()
+
+    override_calls = [
+        call for call in mock_save_classifications.call_args_list
+        if call.kwargs.get("classification_source") == "manual_override"
+    ]
+    assert override_calls == []
+
+    saved_discounts = mock_save_snapshot.call_args.args[1]
+    assert saved_discounts[0]["food_usage_class"] == "beverage"
+    assert saved_discounts[0]["recipe_eligible"] is False
 
     saved_discounts = mock_save_snapshot.call_args.args[1]
     assert saved_discounts[0]["category"] == "snack"
