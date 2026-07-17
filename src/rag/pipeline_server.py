@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from .config import RecipeRAGConfig
 from .discounts_store import get_latest_snapshot
-from .meal_ideas import generate_meal_ideas_from_cart
+from .meal_ideas import generate_meal_ideas_from_cart, generate_meal_ideas_from_store
 from .pipeline import RecipeRAGPipeline
 
 logging.basicConfig(level=logging.INFO)
@@ -215,6 +215,29 @@ def meal_ideas_from_cart(req: MealIdeasFromCartRequest):
     discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
     return generate_meal_ideas_from_cart(
         pipeline, discounts, req.discount_item_ids, max_results=req.max_results, language=req.language,
+    )
+
+
+class MealIdeasFromStoreRequest(BaseModel):
+    # Task H3: a store name, not a product payload -- the client never sends the full
+    # discount catalogue, only the id of which store it picked. The store's offers are
+    # looked up server-side from the same cached snapshot /recipes/discounted reads.
+    store_name: str
+    max_results: Optional[int] = 5
+    language: str = "en"
+
+
+@app.post("/meal-ideas/from-store")
+def meal_ideas_from_store(req: MealIdeasFromStoreRequest):
+    """Epic E (Task E2/E4): generates practical meal ideas from one store's current
+    cached offers, the same corpus-first/generation-fallback pipeline
+    /meal-ideas/from-cart uses (see meal_ideas.generate_meal_ideas_from_store()). Never
+    triggers a new Tjek scan, reclassification, or discount re-analysis -- store_name is
+    matched against the latest cached snapshot exactly like /recipes/discounted itself
+    already does, just filtered down to one store first (Task E2's hard rule)."""
+    discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    return generate_meal_ideas_from_store(
+        pipeline, discounts, req.store_name, max_results=req.max_results, language=req.language,
     )
 
 

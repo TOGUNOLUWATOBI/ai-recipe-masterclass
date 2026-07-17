@@ -1,6 +1,13 @@
 import { API_BASE_URL, DEFAULT_TIMEOUT_MS, DISCOUNTED_TIMEOUT_MS } from "../config";
 import type { Language } from "../i18n/language";
-import type { DiscountedResponse, GeneratedRecipe, IngredientsResponse, QueryResponse } from "../types/api";
+import type {
+  DiscountedResponse,
+  GeneratedRecipe,
+  IngredientsResponse,
+  MealIdeasFromCartResponse,
+  MealIdeasFromStoreResponse,
+  QueryResponse,
+} from "../types/api";
 import { ApiError } from "./errors";
 import { MAX_INGREDIENT_COUNT, sanitizeIngredients, sanitizeQuestion } from "./validation";
 
@@ -104,6 +111,49 @@ export async function getDiscountedRecipes(
 
   if (!Array.isArray(data.discounted_ingredients) || !isRecipeArray(data.recipes)) {
     throw new ApiError("invalid_response", "Discounted response was missing expected fields");
+  }
+  return data;
+}
+
+// Epic E: same "small request, no full catalogue" shape (Task H3) for both meal-ideas
+// entry points -- discount_item_ids / store_name only, never a product payload.
+
+export async function getMealIdeasFromCart(
+  discountItemIds: string[],
+  maxResults = 5,
+  language: Language = "en"
+): Promise<MealIdeasFromCartResponse> {
+  const data = await fetchJson<MealIdeasFromCartResponse>(
+    "/meal-ideas/from-cart",
+    {
+      method: "POST",
+      body: JSON.stringify({ discount_item_ids: discountItemIds, max_results: maxResults, language }),
+    },
+    DEFAULT_TIMEOUT_MS
+  );
+
+  if (!Array.isArray(data.ideas) || !Array.isArray(data.excluded_cart_items)) {
+    throw new ApiError("invalid_response", "Meal ideas response was missing expected fields");
+  }
+  return data;
+}
+
+export async function getMealIdeasFromStore(
+  storeName: string,
+  maxResults = 5,
+  language: Language = "en"
+): Promise<MealIdeasFromStoreResponse> {
+  const data = await fetchJson<MealIdeasFromStoreResponse>(
+    "/meal-ideas/from-store",
+    {
+      method: "POST",
+      body: JSON.stringify({ store_name: storeName, max_results: maxResults, language }),
+    },
+    DEFAULT_TIMEOUT_MS
+  );
+
+  if (!Array.isArray(data.ideas) || !Array.isArray(data.excluded_store_items)) {
+    throw new ApiError("invalid_response", "Meal ideas response was missing expected fields");
   }
   return data;
 }

@@ -26,10 +26,10 @@ describe("translations", () => {
     }
   });
 
-  it("pluralizes the corpus-match count correctly in both languages", () => {
-    expect(translations.en.ingredientsFoundCorpus(1)).toBe("Found 1 matching recipe");
-    expect(translations.en.ingredientsFoundCorpus(2)).toBe("Found 2 matching recipes");
-    expect(translations.no.ingredientsFoundCorpus(1)).toBe("Fant 1 passende oppskrift");
-    expect(translations.no.ingredientsFoundCorpus(2)).toBe("Fant 2 passende oppskrifter");
+  it("pluralizes the meal-idea selection count correctly in both languages", () => {
+    expect(translations.en.ingredientsSelectedForMealIdeas(1)).toBe("1 ingredient selected for meal ideas");
+    expect(translations.en.ingredientsSelectedForMealIdeas(2)).toBe("2 ingredients selected for meal ideas");
+    expect(translations.no.ingredientsSelectedForMealIdeas(1)).toBe("1 ingrediens valgt til middagsidéer");
+    expect(translations.no.ingredientsSelectedForMealIdeas(2)).toBe("2 ingredienser valgt til middagsidéer");
   });
 });

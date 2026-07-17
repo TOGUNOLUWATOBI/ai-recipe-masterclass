@@ -121,3 +121,52 @@ export interface DiscountedResponse {
   error: string | null;
   updated_at: string | null;
 }
+
+// Epic E: mirrors rag/meal_ideas.py's response shape for both /meal-ideas/from-cart
+// (Epic C) and /meal-ideas/from-store (Epic E) -- same MealIdea shape either way, just
+// a different excluded-items field name and, for the store flow, an echoed store_name.
+// Distinct from RecipeSource ("corpus"/"generated") -- meal_ideas.py's own vocabulary
+// is "retrieved"/"generated" (see _generate_ideas_from_eligible_rows()).
+export type MealIdeaSource = "retrieved" | "generated" | null;
+
+export type CompletionStatus = "complete" | "nearly_complete" | "partial";
+
+export interface StructuredIngredient {
+  name: string;
+  // null when recipe_structuring.py's split_quantity_and_name() found no leading
+  // quantity/unit on the raw ingredient line (e.g. "salt to taste").
+  quantity: string | null;
+}
+
+export interface MealIdea {
+  title: string | null;
+  description: string | null;
+  servings: number | null;
+  completion_status: CompletionStatus;
+  selected_items_used: string[];
+  required_ingredients: StructuredIngredient[];
+  optional_ingredients: StructuredIngredient[];
+  missing_required_ingredients: string[];
+  ingredient_coverage_percentage: number;
+  pantry_basics_assumed: string[];
+  estimated_complexity: string | null;
+  source_type: "retrieved" | "generated";
+}
+
+export interface ExcludedItem {
+  product_name: string;
+  reason: string;
+}
+
+export interface MealIdeasFromCartResponse {
+  ideas: MealIdea[];
+  excluded_cart_items: ExcludedItem[];
+  source: MealIdeaSource;
+}
+
+export interface MealIdeasFromStoreResponse {
+  ideas: MealIdea[];
+  excluded_store_items: ExcludedItem[];
+  store_name: string;
+  source: MealIdeaSource;
+}

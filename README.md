@@ -136,6 +136,12 @@ re-embeds the full ~20k-recipe corpus from scratch).
   note (salt/water/cooking oil) for the staples never listed as an ingredient to source —
   coverage/completion_status count only the required set, so an optional garnish or an
   assumed pantry basic never counts as "missing"
+- `POST /meal-ideas/from-store` — Epic E: same corpus-first/generation-fallback pipeline
+  as `/meal-ideas/from-cart` above, sourced from one store's current cached offers
+  instead of the user's cart (just a `store_name`, never the full discount catalogue —
+  Task H3). Powers the Meal Ideas tab's "From a store's offers" entry point; never
+  triggers a new Tjek scan, reclassification, or discount re-analysis — `store_name`
+  is filtered from the same snapshot `/recipes/discounted` already reads.
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from
