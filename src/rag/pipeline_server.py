@@ -260,7 +260,12 @@ def ingredient_offers(req: IngredientOffersRequest):
     refresh_discounts.py)."""
     _, updated_at = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
     index_rows = get_ingredient_index_rows(config.DISCOUNTS_DB_PATH)
-    max_offers = req.max_offers_per_ingredient or 5
+    # `or 5` would treat an explicitly-requested 0 the same as "not sent" (Python
+    # falsy-zero) and silently override it -- check for None specifically, and floor
+    # at 0 so a negative value can't produce a Python negative-slice surprise in
+    # match_ingredient_offers's `ranked[:max_offers]`.
+    max_offers = req.max_offers_per_ingredient if req.max_offers_per_ingredient is not None else 5
+    max_offers = max(0, max_offers)
     return {
         "snapshot_updated_at": updated_at,
         "ingredients": [

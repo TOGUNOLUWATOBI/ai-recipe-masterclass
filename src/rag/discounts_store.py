@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS discounts (
     unit_price_unit TEXT,
     image_url TEXT,
     store_name TEXT,
-    store_logo_url TEXT
+    store_logo_url TEXT,
+    valid_from TEXT,
+    valid_until TEXT
 );
 CREATE TABLE IF NOT EXISTS scan_meta (
     id INTEGER PRIMARY KEY CHECK (id = 0),
@@ -105,6 +107,11 @@ _COLUMNS = [
     "shopping_group", "food_usage_class", "meal_role", "recipe_eligible", "recipe_exclusion_reason",
     "current_price", "reference_price",
     "discount_pct", "unit_price", "unit_price_unit", "image_url", "store_name", "store_logo_url",
+    # Epic F1: the flyer's own real validity window (grocery_discounts.py's
+    # valid_from/valid_until) -- without these here, they only ever reached
+    # discount_ingredient_index, never the main snapshot every other reader of this
+    # module actually uses.
+    "valid_from", "valid_until",
 ]
 
 # Columns that predate Epic A -- anything in _COLUMNS but not here gets added via
@@ -121,6 +128,8 @@ _NEW_DISCOUNT_COLUMN_TYPES = {
     "meal_role": "TEXT",
     "recipe_eligible": "INTEGER",
     "recipe_exclusion_reason": "TEXT",
+    "valid_from": "TEXT",
+    "valid_until": "TEXT",
 }
 
 
@@ -129,13 +138,16 @@ def _connect(db_path: str, conn: Optional[sqlite3.Connection] = None):
     """Opens (and schema-initializes) a connection to db_path, or reuses `conn` if the
     caller already has one open -- see open_connection() below, used by
     refresh_discounts.py's main() to make several of the calls in this module share one
-    connection instead of re-paying the schema-init PRAGMA/ALTER checks per call. A
-    reused connection is committed here (so every write-through function's writes are
-    still durable the moment that function returns) but not closed -- that stays the
-    original opener's responsibility."""
+    connection instead of re-paying the schema-init PRAGMA/ALTER checks per call.
+
+    A reused connection is deliberately NOT committed here -- every call sharing one
+    connection is part of the same transaction, committed exactly once by the original
+    opener's own _connect() call when its `with open_connection(...)` block exits (see
+    below). Committing per-call here would let a mid-run failure (e.g. the ingredient
+    index rebuild succeeding but the snapshot save failing right after) leave the
+    database in a partially-updated state instead of rolling the whole run back."""
     if conn is not None:
         yield conn
-        conn.commit()
         return
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -164,7 +176,12 @@ def open_connection(db_path: str):
     """Opens one schema-initialized connection for a caller (e.g. refresh_discounts.py's
     main()) that makes several of this module's calls in one run -- pass the yielded
     connection as each call's `conn=` to skip re-opening the file and re-running the
-    PRAGMA table_info/ALTER TABLE checks every time."""
+    PRAGMA table_info/ALTER TABLE checks every time. Also makes the whole run atomic:
+    every write made through this connection is one single transaction, committed once
+    when this `with` block exits normally -- if any call raises, nothing written during
+    the run is committed (e.g. a mid-refresh failure can never leave the ingredient
+    index rebuilt from the new scan while the snapshot itself still reflects the old
+    one)."""
     with _connect(db_path) as conn:
         yield conn
 
@@ -348,4 +365,11 @@ def get_ingredient_index_rows(db_path: str, conn: Optional[sqlite3.Connection] =
     opening a new one."""
     with _connect(db_path, conn) as c:
         rows = c.execute(f"SELECT {', '.join(_INGREDIENT_INDEX_COLUMNS)} FROM discount_ingredient_index").fetchall()
-    return [{col: row[col] for col in _INGREDIENT_INDEX_COLUMNS} for row in rows]
+    results = [{col: row[col] for col in _INGREDIENT_INDEX_COLUMNS} for row in rows]
+    for item in results:
+        # SQLite has no native boolean -- stored as 0/1/NULL, coerced back to a real
+        # bool here the same way get_latest_snapshot() already does for this exact
+        # field on the sibling `discounts` table, so a caller can safely use it in a
+        # boolean context (e.g. `offer["recipe_eligible"] is True`).
+        item["recipe_eligible"] = bool(item["recipe_eligible"])
+    return results
