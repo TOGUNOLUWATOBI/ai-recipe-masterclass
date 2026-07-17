@@ -130,7 +130,12 @@ re-embeds the full ~20k-recipe corpus from scratch).
   returns ranked, corpus-first meal ideas with deterministic ingredient-coverage
   matching (`complete`/`nearly_complete`/`partial`) — falling back to LLM generation
   only when retrieval finds nothing usable. Never forces every cart item into one dish;
-  each idea reports just the subset it actually uses
+  each idea reports just the subset it actually uses. Each idea's ingredients are split
+  into `required_ingredients`/`optional_ingredients` (Epic D, `rag/recipe_structuring.py`)
+  with quantity separated from the ingredient name, and a fixed `pantry_basics_assumed`
+  note (salt/water/cooking oil) for the staples never listed as an ingredient to source —
+  coverage/completion_status count only the required set, so an optional garnish or an
+  assumed pantry basic never counts as "missing"
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from

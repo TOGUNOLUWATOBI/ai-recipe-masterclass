@@ -24,22 +24,25 @@ Pipeline (mirrors Task C1-C8 in order):
   4. Retrieve corpus candidates first (pipeline.find_recipes_from_ingredients) --
      generation is only used as a fallback when retrieval returns nothing usable
      (Task C3).
-  5. Score each candidate's ingredient coverage deterministically (_compute_coverage) --
-     never left to the LLM's judgment (Task C4).
+  5. Split each candidate's ingredient lines into required/optional (Epic D's
+     recipe_structuring.structure_ingredients()) and score coverage deterministically
+     against the required set only (Task C4) -- never left to the LLM's judgment, and
+     never counting an optional garnish or an assumed pantry basic (salt/water/oil)
+     against a recipe's completion status.
   6. Rank by completion tier, then coverage, then simplicity (Task C5 -- the corpus has
-     no explicit complexity/cooking-time field, so recipe ingredient count is the best
-     available proxy for "simpler"; a real complexity/time signal is future work once
-     that data exists, likely alongside Epic D's structured recipe schema).
+     no explicit complexity/cooking-time field, so required-ingredient count is the
+     best available proxy for "simpler"; a real complexity/time signal is future work
+     once that data exists).
   7. Every idea reports only the subset of eligible ingredients it actually used --
      nothing here ever tries to force all selected products into one dish (Task C6).
 
-Epic D (required vs. optional ingredient separation) doesn't exist yet, so every
-ingredient a candidate recipe lists is treated as "required" for coverage purposes here
--- optional_ingredients is always empty and estimated_complexity always null until that
-data exists. Epic G (the shared, cross-endpoint AI behavior policy with few-shot
-examples and full response validation) is also a separate, later epic -- the system
-prompt and temperature below are this endpoint's own minimal, working version of that
-policy, expected to be refactored into Epic G's shared module once it lands.
+estimated_complexity and servings are always null -- neither the corpus nor generation
+currently produces that data; a real signal for either is future work, not something
+this module fabricates. Epic G (the shared, cross-endpoint AI behavior policy with
+few-shot examples and full response validation) is also a separate, later epic -- the
+system prompt and temperature below are this endpoint's own minimal, working version of
+that policy (now folding in Task D4's tone rules too), expected to be refactored into
+Epic G's shared module once it lands.
 """
 
 import logging
@@ -48,6 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .grocery_terms import normalize_grocery_heading
 from .pipeline import RecipeRAGPipeline, _parse_recipe_sections
+from .recipe_structuring import structure_ingredients
 
 logger = logging.getLogger(__name__)
 
@@ -154,29 +158,32 @@ def _ingredient_line_matches(line: str, normalized_cart_name: str) -> bool:
 
 
 def compute_coverage(
-    recipe_ingredients: List[str], normalized_cart_names: List[str]
+    required_ingredient_names: List[str], normalized_cart_names: List[str]
 ) -> Dict[str, Any]:
     """Deterministic ingredient-coverage matching (Task C4) -- never left to the LLM's
-    judgment. Every ingredient a recipe lists is treated as "required" (Epic D's
-    required/optional split doesn't exist yet -- see module docstring)."""
+    judgment. Takes clean ingredient *names* (Epic D's recipe_structuring.
+    structure_ingredients() output, quantity already stripped, optional/pantry-basic
+    lines already excluded) rather than raw lines -- coverage and completion_status are
+    about the required set specifically, so an optional garnish or an assumed pantry
+    basic (salt/water/oil) never counts as "missing" against a recipe."""
     matched_cart_names: List[str] = []
-    missing_lines: List[str] = []
+    missing_names: List[str] = []
 
-    for line in recipe_ingredients:
+    for name in required_ingredient_names:
         matched_name = next(
-            (name for name in normalized_cart_names if _ingredient_line_matches(line, name)), None
+            (cart_name for cart_name in normalized_cart_names if _ingredient_line_matches(name, cart_name)), None
         )
         if matched_name is not None:
             if matched_name not in matched_cart_names:
                 matched_cart_names.append(matched_name)
         else:
-            missing_lines.append(line)
+            missing_names.append(name)
 
-    total = len(recipe_ingredients)
-    coverage_pct = round(100 * (total - len(missing_lines)) / total, 1) if total else 0.0
+    total = len(required_ingredient_names)
+    coverage_pct = round(100 * (total - len(missing_names)) / total, 1) if total else 0.0
     return {
         "matched_cart_names": matched_cart_names,
-        "missing_required_ingredients": missing_lines,
+        "missing_required_ingredients": missing_names,
         "ingredient_coverage_percentage": coverage_pct,
     }
 
@@ -212,14 +219,20 @@ def _rank_key(idea: Dict[str, Any]) -> Tuple[int, float, int, int]:
 def _build_idea_from_corpus_result(
     result: Dict[str, Any], normalized_cart_names: List[str]
 ) -> Optional[Dict[str, Any]]:
-    """Builds one structured idea (Task C7) from a single retrieved corpus recipe.
-    Returns None if the recipe doesn't actually use any of the cart's ingredients --
-    coverage matching can occasionally retrieve something related-but-not-really-a-
-    match (BM25/dense similarity isn't the same claim as "uses this ingredient"), and a
-    zero-match "idea" isn't a meaningful cart-based suggestion."""
+    """Builds one structured idea (Task C7, now enriched by Epic D's required/optional
+    split) from a single retrieved corpus recipe. Returns None if the recipe doesn't
+    actually use any of the cart's ingredients -- coverage matching can occasionally
+    retrieve something related-but-not-really-a-match (BM25/dense similarity isn't the
+    same claim as "uses this ingredient"), and a zero-match "idea" isn't a meaningful
+    cart-based suggestion."""
     payload = result.get("payload") or {}
-    ingredients: List[str] = payload.get("ingredients") or []
-    coverage = compute_coverage(ingredients, normalized_cart_names)
+    raw_ingredients: List[str] = payload.get("ingredients") or []
+    structured = structure_ingredients(raw_ingredients)
+    required = structured["required_ingredients"]
+    optional = structured["optional_ingredients"]
+
+    required_names = [ing["name"] for ing in required]
+    coverage = compute_coverage(required_names, normalized_cart_names)
     if not coverage["matched_cart_names"]:
         return None
 
@@ -227,12 +240,14 @@ def _build_idea_from_corpus_result(
     return {
         "title": payload.get("title"),
         "description": None,
-        "completion_status": completion_status(len(ingredients), len(missing)),
+        "servings": None,
+        "completion_status": completion_status(len(required), len(missing)),
         "selected_items_used": coverage["matched_cart_names"],
-        "required_ingredients": ingredients,
-        "optional_ingredients": [],
+        "required_ingredients": required,
+        "optional_ingredients": optional,
         "missing_required_ingredients": missing,
         "ingredient_coverage_percentage": coverage["ingredient_coverage_percentage"],
+        "pantry_basics_assumed": structured["pantry_basics_assumed"],
         "estimated_complexity": None,
         "source_type": "retrieved",
     }
@@ -250,8 +265,9 @@ STRICT RULES:
 2. You do not have to use every ingredient listed -- use whichever subset makes one sensible, coherent meal, and ignore the rest.
 3. Never invent an ingredient that isn't listed and isn't a basic pantry staple (salt, water, cooking oil, pepper).
 4. Present the ingredients you actually use as a simple, clean bulleted list, and the steps as a numbered list.
-5. Use only standard, plain English text. Never use R-programming syntax (like c(), quotes, or brackets around lists).
-6. Do not include conversational filler."""
+5. Keep instructions short and plain: about 4 to 8 steps, ordinary short sentences, no professional culinary terms, no plating direction, and never describe the dish as "gourmet", "elevated", or "restaurant-quality".
+6. Use only standard, plain English text. Never use R-programming syntax (like c(), quotes, or brackets around lists).
+7. Do not include conversational filler."""
 
 # Three distinct angles for three separate calls -- asking one call for "3 meal ideas"
 # doesn't work (confirmed empirically elsewhere in this codebase, see
@@ -310,8 +326,13 @@ def _generate_fallback_ideas(
         ingredients_block = sections.get("ingredients")
         if not ingredients_block:
             continue
-        recipe_ingredients = _split_generated_ingredient_lines(ingredients_block)
-        coverage = compute_coverage(recipe_ingredients, normalized_cart_names)
+        raw_ingredients = _split_generated_ingredient_lines(ingredients_block)
+        structured = structure_ingredients(raw_ingredients)
+        required = structured["required_ingredients"]
+        optional = structured["optional_ingredients"]
+
+        required_names = [ing["name"] for ing in required]
+        coverage = compute_coverage(required_names, normalized_cart_names)
         if not coverage["matched_cart_names"]:
             continue
 
@@ -319,12 +340,14 @@ def _generate_fallback_ideas(
         ideas.append({
             "title": sections.get("title"),
             "description": None,
-            "completion_status": completion_status(len(recipe_ingredients), len(missing)),
+            "servings": None,
+            "completion_status": completion_status(len(required), len(missing)),
             "selected_items_used": coverage["matched_cart_names"],
-            "required_ingredients": recipe_ingredients,
-            "optional_ingredients": [],
+            "required_ingredients": required,
+            "optional_ingredients": optional,
             "missing_required_ingredients": missing,
             "ingredient_coverage_percentage": coverage["ingredient_coverage_percentage"],
+            "pantry_basics_assumed": structured["pantry_basics_assumed"],
             "estimated_complexity": None,
             "source_type": "generated",
         })
