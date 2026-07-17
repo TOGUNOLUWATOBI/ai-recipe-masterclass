@@ -94,7 +94,18 @@ _NEW_DISCOUNT_COLUMN_TYPES = {
 
 
 @contextmanager
-def _connect(db_path: str):
+def _connect(db_path: str, conn: Optional[sqlite3.Connection] = None):
+    """Opens (and schema-initializes) a connection to db_path, or reuses `conn` if the
+    caller already has one open -- see open_connection() below, used by
+    refresh_discounts.py's main() to make several of the calls in this module share one
+    connection instead of re-paying the schema-init PRAGMA/ALTER checks per call. A
+    reused connection is committed here (so every write-through function's writes are
+    still durable the moment that function returns) but not closed -- that stays the
+    original opener's responsibility."""
+    if conn is not None:
+        yield conn
+        conn.commit()
+        return
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -117,39 +128,60 @@ def _connect(db_path: str):
         conn.close()
 
 
-def save_snapshot(db_path: str, discounts: List[Dict[str, Any]], scanned_at: str) -> None:
+@contextmanager
+def open_connection(db_path: str):
+    """Opens one schema-initialized connection for a caller (e.g. refresh_discounts.py's
+    main()) that makes several of this module's calls in one run -- pass the yielded
+    connection as each call's `conn=` to skip re-opening the file and re-running the
+    PRAGMA table_info/ALTER TABLE checks every time."""
+    with _connect(db_path) as conn:
+        yield conn
+
+
+def save_snapshot(
+    db_path: str, discounts: List[Dict[str, Any]], scanned_at: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
     """Replaces the entire cache with one new snapshot tagged with a single scanned_at
     shared by every row — old snapshots are dropped, not accumulated, since only the
     latest is ever served. scan_meta is updated even when discounts is empty (nothing
-    currently on sale), so that state stays distinguishable from "never scanned"."""
-    with _connect(db_path) as conn:
-        conn.execute("DELETE FROM discounts")
+    currently on sale), so that state stays distinguishable from "never scanned".
+
+    Pass `conn` (see open_connection()) to reuse an already-open connection instead of
+    opening a new one."""
+    with _connect(db_path, conn) as c:
+        c.execute("DELETE FROM discounts")
         if discounts:
-            conn.executemany(
+            c.executemany(
                 f"""INSERT INTO discounts (scanned_at, {", ".join(_COLUMNS)})
                     VALUES (:scanned_at, {", ".join(f":{c}" for c in _COLUMNS)})""",
                 [{**{c: d.get(c) for c in _COLUMNS}, "scanned_at": scanned_at} for d in discounts],
             )
-        conn.execute(
+        c.execute(
             """INSERT INTO scan_meta (id, last_scanned_at) VALUES (0, ?)
                ON CONFLICT(id) DO UPDATE SET last_scanned_at = excluded.last_scanned_at""",
             (scanned_at,),
         )
 
 
-def get_latest_snapshot(db_path: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def get_latest_snapshot(
+    db_path: str, conn: Optional[sqlite3.Connection] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Returns (discounts, scanned_at) — ([], None) if the cache has never been
     populated (e.g. before the first cron run has ever fired). `recipe_eligible` is
     coerced back to a real bool (SQLite has no native boolean type -- it's stored as
     0/1) for every row that has it; rows written before Epic A existed have it as
     None, which coerces to False, matching classify_product()'s old "no field means
     don't feed this into recipe generation" absence semantics being replaced anyway
-    the next time refresh_discounts.py reclassifies that row."""
-    with _connect(db_path) as conn:
-        meta = conn.execute("SELECT last_scanned_at FROM scan_meta WHERE id = 0").fetchone()
+    the next time refresh_discounts.py reclassifies that row.
+
+    Pass `conn` (see open_connection()) to reuse an already-open connection instead of
+    opening a new one."""
+    with _connect(db_path, conn) as c:
+        meta = c.execute("SELECT last_scanned_at FROM scan_meta WHERE id = 0").fetchone()
         if meta is None:
             return [], None
-        rows = conn.execute("SELECT * FROM discounts ORDER BY discount_pct DESC").fetchall()
+        rows = c.execute("SELECT * FROM discounts ORDER BY discount_pct DESC").fetchall()
 
     discounts = []
     for row in rows:
@@ -159,15 +191,20 @@ def get_latest_snapshot(db_path: str) -> Tuple[List[Dict[str, Any]], Optional[st
     return discounts, meta["last_scanned_at"]
 
 
-def get_cached_classifications(db_path: str, product_names: List[str]) -> Dict[str, ProductClassification]:
+def get_cached_classifications(
+    db_path: str, product_names: List[str], conn: Optional[sqlite3.Connection] = None,
+) -> Dict[str, ProductClassification]:
     """Returns whichever of the given product names already have a cached
     classification -- a name absent from the returned dict has never been classified
-    before (by the LLM classifier or otherwise) and needs a fresh classification."""
+    before (by the LLM classifier or otherwise) and needs a fresh classification.
+
+    Pass `conn` (see open_connection()) to reuse an already-open connection instead of
+    opening a new one."""
     if not product_names:
         return {}
-    with _connect(db_path) as conn:
+    with _connect(db_path, conn) as c:
         placeholders = ", ".join("?" for _ in product_names)
-        rows = conn.execute(
+        rows = c.execute(
             f"""SELECT product_name, shopping_group, food_usage_class, meal_role,
                        recipe_eligible, recipe_exclusion_reason
                 FROM product_classifications WHERE product_name IN ({placeholders})""",
@@ -192,6 +229,7 @@ def save_classifications(
     classified_at: str,
     classifier_version: str,
     classification_confidence: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """Upserts newly-classified product_name -> ProductClassification pairs, all
     sharing one classification_source/classified_at/classifier_version/confidence
@@ -199,11 +237,14 @@ def save_classifications(
     the LLM batch and once for manual overrides). Never deletes existing entries --
     this table accumulates indefinitely, unlike `discounts` (see module docstring),
     so a product already classified is never reclassified even if it temporarily
-    drops out of the current scan."""
+    drops out of the current scan.
+
+    Pass `conn` (see open_connection()) to reuse an already-open connection instead of
+    opening a new one."""
     if not classifications:
         return
-    with _connect(db_path) as conn:
-        conn.executemany(
+    with _connect(db_path, conn) as c:
+        c.executemany(
             """INSERT INTO product_classifications
                    (product_name, shopping_group, food_usage_class, meal_role,
                     recipe_eligible, recipe_exclusion_reason, classification_source,

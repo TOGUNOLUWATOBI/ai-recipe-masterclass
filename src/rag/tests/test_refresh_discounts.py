@@ -5,6 +5,7 @@ the cached snapshot's age before doing a full Tjek sweep and skips it when the s
 still fresh, so pairing this with a more frequent cron (hourly) lets any wake-up catch up
 automatically instead of waiting up to 24h for the next exact firing."""
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -44,6 +45,16 @@ def _patch_tjek_client(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _patch_open_connection(monkeypatch):
+    # main() now opens one shared connection up front (see discounts_store.
+    # open_connection()) and threads it through every call below via conn= --
+    # every one of those calls is itself mocked out in these tests, so the actual
+    # connection object is never touched; a dummy stand-in via nullcontext keeps
+    # main() from opening a real sqlite file during a unit test run.
+    monkeypatch.setattr(refresh_discounts, "open_connection", lambda db_path: nullcontext(MagicMock()))
+
+
+@pytest.fixture(autouse=True)
 def _patch_classification(monkeypatch):
     # The classification pipeline (manual overrides, the permanent cache, and the LLM
     # classifier) is a separate concern from the staleness gate this file otherwise
@@ -68,7 +79,7 @@ def test_fresh_snapshot_skips_the_sweep(monkeypatch):
     overwrite."""
     monkeypatch.setattr(
         refresh_discounts, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "OLD"}], _iso(timedelta(hours=2))),
+        lambda db_path, conn=None: ([{"product_name": "OLD"}], _iso(timedelta(hours=2))),
     )
     mock_find = MagicMock()
     mock_save = MagicMock()
@@ -86,7 +97,7 @@ def test_stale_snapshot_proceeds_with_the_sweep(monkeypatch):
     confirmed live) must trigger a full sweep exactly like today, refreshing the cache."""
     monkeypatch.setattr(
         refresh_discounts, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "OLD"}], _iso(timedelta(hours=72))),
+        lambda db_path, conn=None: ([{"product_name": "OLD"}], _iso(timedelta(hours=72))),
     )
     mock_find = MagicMock(return_value=[{"product_name": "NEW", "discount_pct": 10.0}])
     mock_save = MagicMock()
@@ -104,7 +115,7 @@ def test_no_snapshot_yet_proceeds_with_the_sweep(monkeypatch):
     """First-ever run (cache never populated, get_latest_snapshot returns ([], None))
     must not be treated as "fresh" -- there's nothing to compare an age against, so the
     sweep must proceed."""
-    monkeypatch.setattr(refresh_discounts, "get_latest_snapshot", lambda db_path: ([], None))
+    monkeypatch.setattr(refresh_discounts, "get_latest_snapshot", lambda db_path, conn=None: ([], None))
     mock_find = MagicMock(return_value=[])
     mock_save = MagicMock()
     monkeypatch.setattr(refresh_discounts, "find_discounted_products", mock_find)
@@ -125,7 +136,7 @@ def test_snapshot_exactly_at_threshold_proceeds_with_the_sweep(monkeypatch):
     direction.)"""
     monkeypatch.setattr(
         refresh_discounts, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "OLD"}], _iso(timedelta(hours=20))),
+        lambda db_path, conn=None: ([{"product_name": "OLD"}], _iso(timedelta(hours=20))),
     )
     mock_find = MagicMock(return_value=[])
     mock_save = MagicMock()
@@ -143,7 +154,7 @@ def test_snapshot_just_under_threshold_skips_the_sweep(monkeypatch):
     the threshold must still be treated as fresh and skip."""
     monkeypatch.setattr(
         refresh_discounts, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "OLD"}], _iso(timedelta(hours=20) - timedelta(seconds=30))),
+        lambda db_path, conn=None: ([{"product_name": "OLD"}], _iso(timedelta(hours=20) - timedelta(seconds=30))),
     )
     mock_find = MagicMock()
     mock_save = MagicMock()
@@ -165,7 +176,7 @@ def test_naive_timestamp_is_treated_as_utc(monkeypatch):
     naive_iso = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None).isoformat()
     monkeypatch.setattr(
         refresh_discounts, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "OLD"}], naive_iso),
+        lambda db_path, conn=None: ([{"product_name": "OLD"}], naive_iso),
     )
     mock_find = MagicMock()
     mock_save = MagicMock()
@@ -186,7 +197,7 @@ def test_malformed_timestamp_falls_through_to_the_sweep(monkeypatch):
     snapshot" and proceed with a fresh sweep."""
     monkeypatch.setattr(
         refresh_discounts, "get_latest_snapshot",
-        lambda db_path: ([{"product_name": "OLD"}], "not-a-real-timestamp"),
+        lambda db_path, conn=None: ([{"product_name": "OLD"}], "not-a-real-timestamp"),
     )
     mock_find = MagicMock(return_value=[{"product_name": "NEW"}])
     mock_save = MagicMock()
