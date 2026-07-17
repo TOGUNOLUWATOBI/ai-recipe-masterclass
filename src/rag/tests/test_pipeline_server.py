@@ -19,10 +19,14 @@ pytest.importorskip("fastapi")
 
 from rag import pipeline_server  # noqa: E402
 from rag.pipeline_server import (  # noqa: E402
+    IngredientOffersRequest,
     IngredientsRequest,
     MealIdeasFromCartRequest,
+    MealIdeasFromStoreRequest,
     QueryRequest,
+    ingredient_offers,
     meal_ideas_from_cart,
+    meal_ideas_from_store,
     query,
     query_stream,
     recipes_discounted,
@@ -348,3 +352,84 @@ def test_meal_ideas_from_cart_reads_the_latest_snapshot_and_delegates(monkeypatc
     assert seen["max_results"] == 3
     assert seen["language"] == "no"
     assert result == {"ideas": [], "excluded_cart_items": []}
+
+
+def test_meal_ideas_from_store_request_defaults(monkeypatch):
+    req = MealIdeasFromStoreRequest(store_name="Kiwi")
+
+    assert req.max_results == 5
+    assert req.language == "en"
+
+
+def test_meal_ideas_from_store_reads_the_latest_snapshot_and_delegates(monkeypatch):
+    """Same thin-adapter shape as /meal-ideas/from-cart: fetch the current snapshot,
+    hand it and the request straight to meal_ideas.generate_meal_ideas_from_store()
+    (see test_meal_ideas.py for that function's own behavior)."""
+    snapshot = [{"product_name": "KYLLINGFILET", "store_name": "Kiwi", "recipe_eligible": True}]
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: (snapshot, "2026-07-16T05:00:00Z"))
+
+    seen = {}
+
+    def fake_generate(pipeline, discounts, store_name, max_results=5, language="en"):
+        seen["discounts"] = discounts
+        seen["store_name"] = store_name
+        seen["max_results"] = max_results
+        seen["language"] = language
+        return {"ideas": [], "excluded_store_items": [], "store_name": store_name}
+
+    monkeypatch.setattr(pipeline_server, "generate_meal_ideas_from_store", fake_generate)
+
+    result = meal_ideas_from_store(MealIdeasFromStoreRequest(store_name="Kiwi", max_results=3, language="no"))
+
+    assert seen["discounts"] == snapshot
+    assert seen["store_name"] == "Kiwi"
+    assert seen["max_results"] == 3
+    assert seen["language"] == "no"
+    assert result == {"ideas": [], "excluded_store_items": [], "store_name": "Kiwi"}
+
+
+# ---------------------------------------------------------------------------
+# /ingredient-offers -- Epic F4
+# ---------------------------------------------------------------------------
+
+def test_ingredient_offers_request_defaults():
+    req = IngredientOffersRequest(ingredients=["chicken fillet"])
+    assert req.max_offers_per_ingredient == 5
+
+
+def test_ingredient_offers_reads_the_index_and_delegates_to_match_ingredient_offers(monkeypatch):
+    """The endpoint itself is a thin adapter -- fetch the current index and snapshot
+    freshness, hand each ingredient straight to ingredient_index.match_ingredient_offers()
+    (see test_ingredient_index.py for that function's own behavior)."""
+    index_rows = [{"normalized_ingredient_key": "chicken fillet"}]
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: ([], "2026-07-16T05:00:00Z"))
+    monkeypatch.setattr(pipeline_server, "get_ingredient_index_rows", lambda db_path: index_rows)
+
+    seen = []
+
+    def fake_match(ingredient_name, rows, max_offers=5):
+        seen.append((ingredient_name, rows, max_offers))
+        return [{"store_name": "Kiwi", "match_confidence": "exact"}] if ingredient_name == "chicken fillet" else []
+
+    monkeypatch.setattr(pipeline_server, "match_ingredient_offers", fake_match)
+
+    result = ingredient_offers(IngredientOffersRequest(ingredients=["chicken fillet", "lemon"], max_offers_per_ingredient=3))
+
+    assert result["snapshot_updated_at"] == "2026-07-16T05:00:00Z"
+    assert result["ingredients"] == [
+        {"ingredient": "chicken fillet", "offers": [{"store_name": "Kiwi", "match_confidence": "exact"}]},
+        {"ingredient": "lemon", "offers": []},
+    ]
+    assert seen == [("chicken fillet", index_rows, 3), ("lemon", index_rows, 3)]
+
+
+def test_ingredient_offers_never_scans_or_reclassifies(monkeypatch):
+    """Task F3's hard requirement: this route must only ever read the already-cached
+    snapshot/index -- no scan, reclassification, or LLM call is even reachable from
+    here (there's nothing in the route to call any of those)."""
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: ([], "2026-07-16T05:00:00Z"))
+    monkeypatch.setattr(pipeline_server, "get_ingredient_index_rows", lambda db_path: [])
+
+    result = ingredient_offers(IngredientOffersRequest(ingredients=["lemon"]))
+
+    assert result["ingredients"] == [{"ingredient": "lemon", "offers": []}]

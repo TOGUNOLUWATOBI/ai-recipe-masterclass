@@ -433,6 +433,12 @@ def find_discounted_products(
                 "image_url": (offer.get("images") or {}).get("view"),
                 "store_name": dealer.get("name") or store_name,
                 "store_logo_url": dealer.get("logo"),
+                # Epic F1: the flyer's own real validity window (confirmed present on
+                # every offer -- see module docstring), carried through so the
+                # ingredient index (ingredient_index.py) can report a genuine expiry
+                # instead of guessing one from the scan cadence.
+                "valid_from": offer.get("run_from"),
+                "valid_until": offer.get("run_till"),
             })
 
     discovered.sort(key=lambda d: (d["discount_pct"] is None, -(d["discount_pct"] or 0)))

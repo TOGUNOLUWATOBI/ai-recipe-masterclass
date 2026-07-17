@@ -13,8 +13,10 @@ from rag.meal_ideas import (
     completion_status,
     filter_eligible_items,
     generate_meal_ideas_from_cart,
+    generate_meal_ideas_from_store,
     normalize_and_dedupe,
     resolve_cart_items,
+    resolve_store_items,
 )
 
 
@@ -55,6 +57,41 @@ def test_resolve_cart_items_excludes_an_id_not_in_the_snapshot():
 
     assert resolved == []
     assert excluded == [{"product_name": "Kiwi::NoLongerOnSale", "reason": "not_found"}]
+
+
+# ---------------------------------------------------------------------------
+# resolve_store_items (Epic E)
+# ---------------------------------------------------------------------------
+
+def test_resolve_store_items_filters_to_one_store():
+    discounts = [
+        _row("Kyllingfilet", store_name="Kiwi"),
+        _row("Laksefilet", store_name="Meny"),
+        _row("Poteter", store_name="Kiwi"),
+    ]
+
+    rows = resolve_store_items("Kiwi", discounts)
+
+    assert [r["product_name"] for r in rows] == ["Kyllingfilet", "Poteter"]
+
+
+def test_resolve_store_items_never_triggers_a_rescan():
+    """Task E2's hard rule: this must be a plain filter over whatever discounts list
+    it's handed, never a network call or a reclassification pass -- there's no client
+    to call out to here, so this test just documents the contract: the same snapshot
+    rows come back unmodified."""
+    row = _row("Kyllingfilet", store_name="Kiwi")
+    discounts = [row]
+
+    rows = resolve_store_items("Kiwi", discounts)
+
+    assert rows == [row]
+
+
+def test_resolve_store_items_matches_the_unknown_store_fallback():
+    rows = resolve_store_items("unknown-store", [_row("Kyllingfilet", store_name=None)])
+
+    assert len(rows) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +404,80 @@ def test_excluded_cart_items_combine_not_found_and_ineligible():
     reasons = {item["product_name"]: item["reason"] for item in result["excluded_cart_items"]}
     assert reasons["Coca-Cola"] == "beverage"
     assert reasons["Kiwi::Gone"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# generate_meal_ideas_from_store -- Epic E, same pipeline as from-cart, sourced
+# from one store's offers instead of the user's cart.
+# ---------------------------------------------------------------------------
+
+def test_from_store_only_considers_the_requested_stores_offers():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [
+        _grounded_result("Chicken and Rice", ["chicken breast", "rice"]),
+    ]
+    discounts = [
+        _row("KYLLINGFILET", store_name="Kiwi"),
+        _row("LAKSEFILET", store_name="Meny"),
+    ]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi")
+
+    called_ingredients = pipeline.find_recipes_from_ingredients.call_args.args[0]
+    assert called_ingredients == ["chicken fillet"]
+    assert result["store_name"] == "Kiwi"
+
+
+def test_from_store_returns_empty_ideas_without_calling_the_pipeline_when_nothing_is_eligible():
+    """Mirrors Task C8/E5 for the store flow: zero eligible offers at this store must
+    never reach retrieval or generation."""
+    pipeline = MagicMock()
+    discounts = [_row("Coca-Cola", store_name="Kiwi", recipe_eligible=False, recipe_exclusion_reason="beverage")]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi")
+
+    assert result["ideas"] == []
+    assert result["excluded_store_items"] == [{"product_name": "Coca-Cola", "reason": "beverage"}]
+    pipeline.find_recipes_from_ingredients.assert_not_called()
+
+
+def test_from_store_excludes_ineligible_offers_from_the_same_store():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [_grounded_result("X", ["chicken breast"])]
+    discounts = [
+        _row("KYLLINGFILET", store_name="Kiwi"),
+        _row("Coca-Cola", store_name="Kiwi", recipe_eligible=False, recipe_exclusion_reason="beverage"),
+    ]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi")
+
+    reasons = {item["product_name"]: item["reason"] for item in result["excluded_store_items"]}
+    assert reasons["Coca-Cola"] == "beverage"
+    called_ingredients = pipeline.find_recipes_from_ingredients.call_args.args[0]
+    assert "Coca-Cola" not in called_ingredients
+
+
+def test_from_store_falls_back_to_generation_when_retrieval_returns_nothing():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = []
+    pipeline.generator.generate.return_value = (
+        "### Chicken Rice Bowl\n\n**Ingredients:**\n- chicken breast\n- rice\n\n"
+        "**Instructions:**\n1. Cook everything."
+    )
+    discounts = [_row("KYLLINGFILET", store_name="Kiwi")]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi", max_results=1)
+
+    assert len(result["ideas"]) == 1
+    assert result["ideas"][0]["source_type"] == "generated"
+
+
+def test_from_store_a_store_with_no_offers_at_all_returns_empty_ideas():
+    pipeline = MagicMock()
+    discounts = [_row("KYLLINGFILET", store_name="Meny")]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi")
+
+    assert result["ideas"] == []
+    assert result["excluded_store_items"] == []
+    pipeline.find_recipes_from_ingredients.assert_not_called()

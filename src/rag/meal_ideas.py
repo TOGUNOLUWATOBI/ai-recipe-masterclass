@@ -76,6 +76,17 @@ def _discount_item_id(row: Dict[str, Any]) -> str:
     return f"{row.get('store_name') or 'unknown-store'}::{row.get('product_name')}"
 
 
+def resolve_store_items(store_name: str, discounts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Epic E (Task E2/E3): every cached row for one store, from the same snapshot
+    get_latest_snapshot() already returned -- a plain in-memory filter, never a new
+    Tjek scan, reclassification, or discount re-analysis (Task E2's hard rule). No
+    separate precomputed per-store table is needed for this: every row already carries
+    its own meal_role/recipe_eligible from refresh time (Epic A), so filtering the
+    existing snapshot by store_name at request time is exactly as cheap as reading a
+    dedicated one would be, without a second structure to keep in sync."""
+    return [row for row in discounts if (row.get("store_name") or "unknown-store") == store_name]
+
+
 def resolve_cart_items(
     discount_item_ids: List[str], discounts: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -355,6 +366,53 @@ def _generate_fallback_ideas(
     return ideas
 
 
+def _generate_ideas_from_eligible_rows(
+    pipeline: RecipeRAGPipeline,
+    eligible_rows: List[Dict[str, Any]],
+    max_results: int,
+) -> Dict[str, Any]:
+    """Shared core of both entry points below (Task C1-C8's pipeline, now also Epic
+    E's from-store flow): given rows already resolved and filtered to recipe_eligible,
+    normalize/dedupe -> retrieve corpus candidates first -> fall back to generation only
+    if retrieval finds nothing usable -> rank -> cap at max_results. Callers own
+    resolving their own source (cart item ids vs. one store's offers) and attach their
+    own excluded-items field to the result -- this only ever sees what already passed
+    eligibility."""
+    # Task C8: zero eligible ingredients -- never call retrieval/generation with an
+    # empty query, just report nothing to suggest.
+    if not eligible_rows:
+        return {"ideas": [], "source": None}
+
+    name_pairs = normalize_and_dedupe(eligible_rows)
+    normalized_names = [normalized for _, normalized in name_pairs]
+
+    grounded = pipeline.find_recipes_from_ingredients(
+        normalized_names, max_results=_CANDIDATE_POOL_SIZE, normalize=False,
+    )
+
+    ideas = []
+    for result in grounded:
+        idea = _build_idea_from_corpus_result(result, normalized_names)
+        if idea is not None:
+            ideas.append(idea)
+
+    source_type = "retrieved"
+    if not ideas:
+        # Task C3: generation is the fallback, only reached when retrieval produced
+        # nothing usable.
+        ideas = _generate_fallback_ideas(pipeline, normalized_names, max_results)
+        source_type = "generated"
+
+    ideas.sort(key=_rank_key)
+    return {
+        "ideas": ideas[:max_results],
+        # Not part of Task C7's documented response shape, but a cheap, useful signal
+        # for the app/logs to know which branch produced these ideas without having to
+        # inspect every individual idea's own source_type.
+        "source": source_type if ideas else None,
+    }
+
+
 def generate_meal_ideas_from_cart(
     pipeline: RecipeRAGPipeline,
     discounts: List[Dict[str, Any]],
@@ -370,39 +428,29 @@ def generate_meal_ideas_from_cart(
     find_recipes_or_generate() does is straightforward follow-up work once needed."""
     resolved_rows, not_found = resolve_cart_items(discount_item_ids, discounts)
     eligible_rows, ineligible = filter_eligible_items(resolved_rows)
-    excluded_cart_items = not_found + ineligible
 
-    # Task C8: zero eligible ingredients -- never call retrieval/generation with an
-    # empty query, just report what got excluded and why.
-    if not eligible_rows:
-        return {"ideas": [], "excluded_cart_items": excluded_cart_items}
+    result = _generate_ideas_from_eligible_rows(pipeline, eligible_rows, max_results)
+    result["excluded_cart_items"] = not_found + ineligible
+    return result
 
-    name_pairs = normalize_and_dedupe(eligible_rows)
-    normalized_cart_names = [normalized for _, normalized in name_pairs]
 
-    grounded = pipeline.find_recipes_from_ingredients(
-        normalized_cart_names, max_results=_CANDIDATE_POOL_SIZE, normalize=False,
-    )
+def generate_meal_ideas_from_store(
+    pipeline: RecipeRAGPipeline,
+    discounts: List[Dict[str, Any]],
+    store_name: str,
+    max_results: int = 5,
+    language: str = "en",
+) -> Dict[str, Any]:
+    """Epic E (Task E2/E4): same corpus-first/generation-fallback pipeline as the cart
+    flow above, sourced from one store's current cached offers instead of the user's
+    cart -- never triggers a new Tjek scan, reclassification, or discount re-analysis
+    (resolve_store_items() only filters the already-cached snapshot). `language` is
+    accepted for the same API-shape-consistency reason as the cart flow above and
+    likewise not yet applied."""
+    store_rows = resolve_store_items(store_name, discounts)
+    eligible_rows, ineligible = filter_eligible_items(store_rows)
 
-    ideas = []
-    for result in grounded:
-        idea = _build_idea_from_corpus_result(result, normalized_cart_names)
-        if idea is not None:
-            ideas.append(idea)
-
-    source_type = "retrieved"
-    if not ideas:
-        # Task C3: generation is the fallback, only reached when retrieval produced
-        # nothing usable.
-        ideas = _generate_fallback_ideas(pipeline, normalized_cart_names, max_results)
-        source_type = "generated"
-
-    ideas.sort(key=_rank_key)
-    return {
-        "ideas": ideas[:max_results],
-        "excluded_cart_items": excluded_cart_items,
-        # Not part of Task C7's documented response shape, but a cheap, useful signal
-        # for the app/logs to know which branch produced these ideas without having to
-        # inspect every individual idea's own source_type.
-        "source": source_type if ideas else None,
-    }
+    result = _generate_ideas_from_eligible_rows(pipeline, eligible_rows, max_results)
+    result["excluded_store_items"] = ineligible
+    result["store_name"] = store_name
+    return result

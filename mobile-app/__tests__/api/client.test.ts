@@ -1,4 +1,10 @@
-import { askQuestion, getDiscountedRecipes, getRecipesFromIngredients } from "../../src/api/client";
+import {
+  askQuestion,
+  getDiscountedRecipes,
+  getMealIdeasFromCart,
+  getMealIdeasFromStore,
+  getRecipesFromIngredients,
+} from "../../src/api/client";
 import { ApiError } from "../../src/api/errors";
 import { ValidationError } from "../../src/api/validation";
 
@@ -252,6 +258,54 @@ describe("getDiscountedRecipes", () => {
     });
     const result = await getDiscountedRecipes();
     expect(result.error).toBe("discount cache not available");
+  });
+});
+
+describe("getMealIdeasFromCart", () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it("posts discount_item_ids/max_results/language and returns the parsed response", async () => {
+    mockFetchOnce({ ideas: [], excluded_cart_items: [], source: null });
+
+    const result = await getMealIdeasFromCart(["Kiwi::Kyllingfilet"], 3, "no");
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toContain("/meal-ideas/from-cart");
+    expect(JSON.parse(options.body)).toEqual({
+      discount_item_ids: ["Kiwi::Kyllingfilet"],
+      max_results: 3,
+      language: "no",
+    });
+    expect(result.ideas).toEqual([]);
+  });
+
+  it("throws ApiError('invalid_response', ...) when ideas is missing", async () => {
+    mockFetchOnce({ excluded_cart_items: [], source: null });
+    await expect(getMealIdeasFromCart(["Kiwi::X"])).rejects.toMatchObject({ kind: "invalid_response" });
+  });
+});
+
+describe("getMealIdeasFromStore", () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it("posts store_name/max_results/language and returns the parsed response", async () => {
+    mockFetchOnce({ ideas: [], excluded_store_items: [], store_name: "Kiwi", source: null });
+
+    const result = await getMealIdeasFromStore("Kiwi", 3, "no");
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toContain("/meal-ideas/from-store");
+    expect(JSON.parse(options.body)).toEqual({ store_name: "Kiwi", max_results: 3, language: "no" });
+    expect(result.store_name).toBe("Kiwi");
+  });
+
+  it("throws ApiError('invalid_response', ...) when excluded_store_items is missing", async () => {
+    mockFetchOnce({ ideas: [], store_name: "Kiwi", source: null });
+    await expect(getMealIdeasFromStore("Kiwi")).rejects.toMatchObject({ kind: "invalid_response" });
   });
 });
 

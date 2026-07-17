@@ -13,6 +13,7 @@ COPY rag/discounts_store.py ./rag/discounts_store.py
 COPY rag/generator.py ./rag/generator.py
 COPY rag/grocery_discounts.py ./rag/grocery_discounts.py
 COPY rag/grocery_terms.py ./rag/grocery_terms.py
+COPY rag/ingredient_index.py ./rag/ingredient_index.py
 COPY rag/meal_ideas.py ./rag/meal_ideas.py
 COPY rag/pipeline.py ./rag/pipeline.py
 COPY rag/product_classification.py ./rag/product_classification.py
