@@ -348,12 +348,14 @@ def test_classify_product_labels_each_food_usage_class():
     assert ready_to_eat["recipe_exclusion_reason"] == "finished_meal"
 
 
-def _offer(heading, price, pre_price=None, store_name="Kiwi", store_logo="k.svg", quantity=None):
+def _offer(heading, price, pre_price=None, store_name="Kiwi", store_logo="k.svg", quantity=None, run_from=None, run_till=None):
     return {
         "heading": heading,
         "pricing": {"price": price, "pre_price": pre_price, "currency": "NOK"},
         "quantity": quantity,
         "dealer": {"name": store_name, "logo": store_logo},
+        "run_from": run_from,
+        "run_till": run_till,
     }
 
 
@@ -372,6 +374,31 @@ def test_find_discounted_products_includes_every_offer_not_just_discounted_ones(
     assert by_name["KYLLINGFILET"]["reference_price"] == 100.0
     assert by_name["LAKSEFILET"]["discount_pct"] is None
     assert by_name["LAKSEFILET"]["reference_price"] is None
+
+
+def test_find_discounted_products_carries_through_the_flyers_own_validity_window():
+    """Epic F1: valid_from/valid_until must come straight from the flyer's own
+    run_from/run_till (never guessed from the scan cadence) -- the ingredient index
+    reports a real expiry only because this is here."""
+    client = MagicMock()
+    client.get_store_offers.return_value = [
+        _offer("KYLLINGFILET", 80.0, run_from="2026-07-13T00:00:00Z", run_till="2026-07-19T23:59:59Z"),
+    ]
+
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
+
+    assert result[0]["valid_from"] == "2026-07-13T00:00:00Z"
+    assert result[0]["valid_until"] == "2026-07-19T23:59:59Z"
+
+
+def test_find_discounted_products_defaults_validity_window_to_none_when_absent():
+    client = MagicMock()
+    client.get_store_offers.return_value = [_offer("KYLLINGFILET", 80.0)]
+
+    result = find_discounted_products(client, stores={"Kiwi": "257bxm"})
+
+    assert result[0]["valid_from"] is None
+    assert result[0]["valid_until"] is None
 
 
 def test_find_discounted_products_ignores_a_pre_price_that_is_not_actually_higher():

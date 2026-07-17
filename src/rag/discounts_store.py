@@ -62,7 +62,38 @@ CREATE TABLE IF NOT EXISTS product_classifications (
     classified_at TEXT NOT NULL,
     classifier_version TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS discount_ingredient_index (
+    normalized_ingredient_key TEXT NOT NULL,
+    ingredient_aliases TEXT,
+    original_product_name TEXT NOT NULL,
+    store_name TEXT,
+    current_price REAL,
+    reference_price REAL,
+    discount_pct REAL,
+    unit_price REAL,
+    unit_price_unit TEXT,
+    image_url TEXT,
+    store_logo_url TEXT,
+    valid_from TEXT,
+    valid_until TEXT,
+    shopping_group TEXT,
+    food_usage_class TEXT,
+    meal_role TEXT,
+    recipe_eligible INTEGER,
+    snapshot_id TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ingredient_index_key ON discount_ingredient_index(normalized_ingredient_key);
 """
+
+# Epic F1's discount_ingredient_index columns, in insert/select order.
+_INGREDIENT_INDEX_COLUMNS = [
+    "normalized_ingredient_key", "ingredient_aliases", "original_product_name", "store_name",
+    "current_price", "reference_price", "discount_pct", "unit_price", "unit_price_unit",
+    "image_url", "store_logo_url", "valid_from", "valid_until",
+    "shopping_group", "food_usage_class", "meal_role", "recipe_eligible",
+    "snapshot_id", "updated_at",
+]
 
 # Legacy label kept for backward compatibility with the mobile app's existing
 # Food/Non-food tab split -- see product_classification.legacy_category(). The
@@ -278,3 +309,43 @@ def save_classifications(
                 for name, c in classifications.items()
             ],
         )
+
+
+def rebuild_ingredient_index(
+    db_path: str, rows: List[Dict[str, Any]], conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Epic F2: replaces the entire index with one fresh build, same wholesale-replace
+    pattern as save_snapshot() -- built once per discount refresh (see
+    ingredient_index.build_ingredient_index_rows(), called from refresh_discounts.py
+    right after classification finishes and right before the new snapshot is saved),
+    never incrementally patched. `rows` is already exactly the row shape this table
+    expects (see _INGREDIENT_INDEX_COLUMNS) -- this function only persists it.
+
+    Pass `conn` (see open_connection()) to reuse an already-open connection instead of
+    opening a new one."""
+    with _connect(db_path, conn) as c:
+        c.execute("DELETE FROM discount_ingredient_index")
+        if rows:
+            c.executemany(
+                f"""INSERT INTO discount_ingredient_index ({", ".join(_INGREDIENT_INDEX_COLUMNS)})
+                    VALUES ({", ".join(f":{col}" for col in _INGREDIENT_INDEX_COLUMNS)})""",
+                [{col: row.get(col) for col in _INGREDIENT_INDEX_COLUMNS} for row in rows],
+            )
+
+
+def get_ingredient_index_rows(db_path: str, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+    """Epic F3: returns the entire current index -- deliberately not filtered by
+    ingredient name in SQL. The index is small (bounded by how many recipe_eligible
+    products one scan finds, at most ~1400 rows -- see grocery_discounts.py), and alias/
+    fuzzy matching (ingredient_index.match_ingredient_offers()) needs to compare a
+    query name against every row's aliases anyway, so a single full read plus in-Python
+    matching is simpler than hand-rolling that logic in SQL, and is the same "small
+    dataset, match in Python" pattern the rest of this codebase already uses (see
+    meal_ideas.py). Never triggers a live Tjek scan or reclassification -- purely a
+    read of whatever rebuild_ingredient_index() last wrote.
+
+    Pass `conn` (see open_connection()) to reuse an already-open connection instead of
+    opening a new one."""
+    with _connect(db_path, conn) as c:
+        rows = c.execute(f"SELECT {', '.join(_INGREDIENT_INDEX_COLUMNS)} FROM discount_ingredient_index").fetchall()
+    return [{col: row[col] for col in _INGREDIENT_INDEX_COLUMNS} for row in rows]

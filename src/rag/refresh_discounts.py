@@ -36,6 +36,13 @@ Epic A classification pipeline (Task A3's processing order), applied once per sc
      invalid entry is simply left uncached so it's retried on the next refresh instead
      of poisoning the cache with a low-confidence guess (see product_classifier.py).
 
+Epic F2: right after classification finishes (every item's final shopping_group/
+food_usage_class/meal_role/recipe_eligible is settled) and right before the snapshot
+itself is saved, the discount_ingredient_index table is rebuilt wholesale from the same
+in-memory `discounts` list (see ingredient_index.build_ingredient_index_rows()) -- the
+expensive normalize+alias work happens once per refresh here, never once per recipe
+view (see pipeline_server.py's /ingredient-offers, which only ever reads this table).
+
 Run with: python -m rag.refresh_discounts
 """
 
@@ -47,11 +54,13 @@ from .discounts_store import (
     get_cached_classifications,
     get_latest_snapshot,
     open_connection,
+    rebuild_ingredient_index,
     save_classifications,
     save_snapshot,
 )
 from .generator import RecipeGenerator
 from .grocery_discounts import TjekClient, find_discounted_products
+from .ingredient_index import build_ingredient_index_rows
 from .product_classification import CLASSIFIER_VERSION, ProductClassification, legacy_category, load_manual_overrides
 from .product_classifier import classify_new_products
 
@@ -175,6 +184,11 @@ def main() -> None:
                     if d["product_name"] in newly_classified:
                         _apply_classification(d, newly_classified[d["product_name"]])
             logger.info(f"LLM classified {len(newly_classified)}/{len(uncached_names)} new product name(s).")
+
+        # Epic F2: build the ingredient index from this run's final classifications --
+        # after every upgrade above, before the snapshot itself is saved.
+        index_rows = build_ingredient_index_rows(discounts, snapshot_id=scanned_at, updated_at=scanned_at)
+        rebuild_ingredient_index(config.DISCOUNTS_DB_PATH, index_rows, conn=conn)
 
         save_snapshot(config.DISCOUNTS_DB_PATH, discounts, scanned_at, conn=conn)
 

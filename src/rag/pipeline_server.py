@@ -20,7 +20,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import RecipeRAGConfig
-from .discounts_store import get_latest_snapshot
+from .discounts_store import get_ingredient_index_rows, get_latest_snapshot
+from .ingredient_index import match_ingredient_offers
 from .meal_ideas import generate_meal_ideas_from_cart, generate_meal_ideas_from_store
 from .pipeline import RecipeRAGPipeline
 
@@ -239,6 +240,34 @@ def meal_ideas_from_store(req: MealIdeasFromStoreRequest):
     return generate_meal_ideas_from_store(
         pipeline, discounts, req.store_name, max_results=req.max_results, language=req.language,
     )
+
+
+class IngredientOffersRequest(BaseModel):
+    ingredients: List[str]
+    max_offers_per_ingredient: Optional[int] = 5
+
+
+@app.post("/ingredient-offers")
+def ingredient_offers(req: IngredientOffersRequest):
+    """Epic F4/F5: for each ingredient (a recipe's required/optional ingredient name,
+    not a raw flyer heading), returns the current matching offers from the precomputed
+    discount_ingredient_index (see ingredient_index.match_ingredient_offers()) --
+    empty `offers` when nothing matches, never "unavailable" (Task F5). A fast index
+    lookup only: never a live Tjek scan, a reclassification, or an LLM call (Task F3),
+    so opening a recipe page costs the same regardless of how large the current
+    catalogue is. `snapshot_updated_at` mirrors /recipes/discounted's own freshness
+    signal -- the index is rebuilt in the same refresh that stamps that snapshot (see
+    refresh_discounts.py)."""
+    _, updated_at = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    index_rows = get_ingredient_index_rows(config.DISCOUNTS_DB_PATH)
+    max_offers = req.max_offers_per_ingredient or 5
+    return {
+        "snapshot_updated_at": updated_at,
+        "ingredients": [
+            {"ingredient": name, "offers": match_ingredient_offers(name, index_rows, max_offers=max_offers)}
+            for name in req.ingredients
+        ],
+    }
 
 
 @app.get("/health")

@@ -64,7 +64,9 @@ src/
     retrieval_client.py          HTTP client pipeline-service uses to reach rag-service
     grocery_discounts.py         Tjek client + flyer-offer discount logic (v2)
     discounts_store.py           SQLite cache /recipes/discounted reads from
-    refresh_discounts.py         cron entrypoint that populates the cache above
+    meal_ideas.py                 Epic C/E: cart/store -> ranked meal ideas
+    ingredient_index.py           Epic F: precomputed ingredient -> current-offer index
+    refresh_discounts.py         cron entrypoint that populates the caches above
     cli.py                       interactive CLI for local development
     run_eval.py                  retrieval regression suite (eval_set.json)
     tests/                       unit tests (pytest)
@@ -142,6 +144,16 @@ re-embeds the full ~20k-recipe corpus from scratch).
   Task H3). Powers the Meal Ideas tab's "From a store's offers" entry point; never
   triggers a new Tjek scan, reclassification, or discount re-analysis — `store_name`
   is filtered from the same snapshot `/recipes/discounted` already reads.
+- `POST /ingredient-offers` — Epic F: given a list of recipe ingredient names, returns
+  each one's current matching offers from a precomputed `discount_ingredient_index`
+  (`rag/ingredient_index.py`) — normalize → exact key match → alias match (e.g.
+  singular/plural) → fuzzy fallback, in that priority order, each offer tagged
+  `exact`/`alias`/`fuzzy` (empty `offers` when nothing matches, never "unavailable").
+  The index itself is rebuilt wholesale once per discount refresh (`refresh_discounts.py`,
+  right after classification finishes), so this route is a pure in-memory lookup —
+  never a live Tjek scan, a reclassification, or an LLM call, regardless of how large
+  the current catalogue gets. Within a confidence tier, offers are ranked by unit price
+  ascending (cheapest, most comparable deal first).
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from
@@ -196,8 +208,15 @@ predictable regardless of how permissive Tjek's API happens to be.
 - ✅ Discount scan is cached (SQLite) and refreshed daily via cron, not scanned live per
   request — see "Grocery discount caching" above. Captures store name/logo and product
   image per discount, not just price, for the mobile app's Mattilbud-style deal cards.
-- ✅ React Native mobile app (`mobile-app/`) — Tilbud (deals, grouped by store) as the
-  home tab, plus Ask and Ingredients. Tapping a deal generates a recipe for that one
-  product on demand rather than generating for the whole list up front.
+- ✅ React Native mobile app (`mobile-app/`) — Tilbud (deals, grouped by store), Cart,
+  Ask, and Meal Ideas (Epic E — replaced the old free-text Ingredients tab with two
+  entry points: from the cart's selected ingredients, or from one store's current
+  offers). Tapping a deal generates a recipe for that one product on demand rather
+  than generating for the whole list up front.
+- ✅ Epic F (backend): `discount_ingredient_index` (`rag/ingredient_index.py`),
+  rebuilt once per discount refresh, and `POST /ingredient-offers` — exact/alias/fuzzy
+  ingredient-to-offer matching with no live scan/LLM call on the request path (F1-F4).
+  Not yet wired into a recipe-page "Where to buy on offer" UI (F5-F7, P1) — the mobile
+  side of that is still open.
 - ⏳ v2 reverse ingredient-sourcing (given a recipe, find where to buy ingredients
-  cheapest) — not yet built
+  cheapest) — backend foundation now in place (see above); no mobile UI yet

@@ -8,7 +8,9 @@ import pytest
 
 from rag.discounts_store import (
     get_cached_classifications,
+    get_ingredient_index_rows,
     get_latest_snapshot,
+    rebuild_ingredient_index,
     save_classifications,
     save_snapshot,
 )
@@ -337,3 +339,72 @@ def test_save_snapshot_migrates_a_pre_epic_a_database_missing_only_category(db_p
     salmon = next(d for d in discounts if d["product_name"] == "Laksefilet 400g")
     assert salmon["food_usage_class"] == "primary_ingredient"
     assert salmon["recipe_eligible"] is True
+
+
+# ---------------------------------------------------------------------------
+# discount_ingredient_index (Epic F1/F2)
+# ---------------------------------------------------------------------------
+
+def _index_row(**overrides):
+    row = {
+        "normalized_ingredient_key": "chicken fillet",
+        "ingredient_aliases": '["chicken fillet", "chicken fillets"]',
+        "original_product_name": "KYLLINGFILET",
+        "store_name": "Kiwi",
+        "current_price": 80.0,
+        "reference_price": 100.0,
+        "discount_pct": 20.0,
+        "unit_price": 160.0,
+        "unit_price_unit": "kg",
+        "image_url": "https://example.com/chicken.jpg",
+        "store_logo_url": "https://kassal.app/logos/Kiwi.svg",
+        "valid_from": "2026-07-13T00:00:00Z",
+        "valid_until": "2026-07-19T23:59:59Z",
+        "shopping_group": "food",
+        "food_usage_class": "primary_ingredient",
+        "meal_role": "protein",
+        "recipe_eligible": True,
+        "snapshot_id": "2026-07-16T06:00:00+00:00",
+        "updated_at": "2026-07-16T06:00:00+00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_get_ingredient_index_rows_returns_empty_before_any_build(db_path):
+    assert get_ingredient_index_rows(db_path) == []
+
+
+def test_rebuild_and_get_ingredient_index_roundtrip(db_path):
+    rebuild_ingredient_index(db_path, [_index_row()])
+
+    rows = get_ingredient_index_rows(db_path)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["normalized_ingredient_key"] == "chicken fillet"
+    assert row["original_product_name"] == "KYLLINGFILET"
+    assert row["valid_from"] == "2026-07-13T00:00:00Z"
+    assert row["valid_until"] == "2026-07-19T23:59:59Z"
+    # SQLite has no native boolean -- stored as 0/1, read back as an int (unlike
+    # get_latest_snapshot(), this table has no caller that needs a coerced real bool
+    # yet; ingredient_index.py's own matching logic only ever checks truthiness).
+    assert bool(row["recipe_eligible"]) is True
+
+
+def test_rebuild_ingredient_index_replaces_the_previous_build_wholesale():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = str(Path(tmp) / "discounts.db")
+        rebuild_ingredient_index(db_path, [_index_row(normalized_ingredient_key="salmon fillet")])
+        rebuild_ingredient_index(db_path, [_index_row(normalized_ingredient_key="chicken fillet")])
+
+        rows = get_ingredient_index_rows(db_path)
+
+        assert [r["normalized_ingredient_key"] for r in rows] == ["chicken fillet"]
+
+
+def test_rebuild_ingredient_index_with_no_rows_clears_the_table(db_path):
+    rebuild_ingredient_index(db_path, [_index_row()])
+    rebuild_ingredient_index(db_path, [])
+
+    assert get_ingredient_index_rows(db_path) == []
