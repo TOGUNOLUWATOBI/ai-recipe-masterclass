@@ -1,7 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { screen } from "@testing-library/react-native";
+import { screen, userEvent } from "@testing-library/react-native";
 import React from "react";
+import { Text, TouchableOpacity } from "react-native";
 import { getMealIdeasFromCart, getMealIdeasFromStore } from "../../src/api/client";
+import { useCart } from "../../src/cart/CartContext";
 import { MealIdeaResultsScreen } from "../../src/screens/MealIdeaResultsScreen";
 import type { MealIdea } from "../../src/types/api";
 import type { CartItem } from "../../src/types/cart";
@@ -181,5 +183,84 @@ describe("MealIdeaResultsScreen", () => {
     await renderWithProviders(<MealIdeaResultsScreen />);
 
     expect(await screen.findByTestId("error-banner")).toBeTruthy();
+  });
+
+  it("does not re-fetch when an unrelated cart mutation changes the cart array's identity but not the eligible/selected set", async () => {
+    function IncrementUnrelatedItem() {
+      const { incrementQuantity } = useCart();
+      return (
+        <TouchableOpacity testID="mutate-unrelated-item" onPress={() => incrementQuantity("Kiwi::Laks")}>
+          <Text>mutate</Text>
+        </TouchableOpacity>
+      );
+    }
+
+    await AsyncStorage.setItem(
+      "cart",
+      JSON.stringify([
+        cartItem({}),
+        cartItem({
+          cart_item_id: "Kiwi::Laks", discount_item_id: "Kiwi::Laks", product_name: "Laksefilet",
+          recipe_eligible: true, selected_for_meal_ideas: false,
+        }),
+      ])
+    );
+    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+    const user = userEvent.setup();
+
+    await renderWithProviders(
+      <>
+        <MealIdeaResultsScreen />
+        <IncrementUnrelatedItem />
+      </>
+    );
+    await screen.findByText("Chicken and Rice");
+    expect(mockedGetMealIdeasFromCart).toHaveBeenCalledTimes(1);
+
+    // Bumps quantity on an item that isn't selected for meal ideas -- the cart array
+    // gets a new reference, but the eligible+selected id set is unchanged.
+    await user.press(screen.getByTestId("mutate-unrelated-item"));
+
+    expect(mockedGetMealIdeasFromCart).toHaveBeenCalledTimes(1);
+  });
+
+  it("does re-fetch when a cart mutation actually changes the eligible/selected set", async () => {
+    function ToggleSelection() {
+      const { toggleMealIdeaSelection } = useCart();
+      return (
+        <TouchableOpacity testID="toggle-selection" onPress={() => toggleMealIdeaSelection("Kiwi::Laks")}>
+          <Text>toggle</Text>
+        </TouchableOpacity>
+      );
+    }
+
+    await AsyncStorage.setItem(
+      "cart",
+      JSON.stringify([
+        cartItem({}),
+        cartItem({
+          cart_item_id: "Kiwi::Laks", discount_item_id: "Kiwi::Laks", product_name: "Laksefilet",
+          recipe_eligible: true, selected_for_meal_ideas: false,
+        }),
+      ])
+    );
+    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+    const user = userEvent.setup();
+
+    await renderWithProviders(
+      <>
+        <MealIdeaResultsScreen />
+        <ToggleSelection />
+      </>
+    );
+    await screen.findByText("Chicken and Rice");
+    expect(mockedGetMealIdeasFromCart).toHaveBeenCalledTimes(1);
+    expect(mockedGetMealIdeasFromCart).toHaveBeenLastCalledWith(["Kiwi::Kyllingfilet"], 5, "en");
+
+    // Selects the salmon too -- now part of the eligible+selected set.
+    await user.press(screen.getByTestId("toggle-selection"));
+
+    expect(mockedGetMealIdeasFromCart).toHaveBeenCalledTimes(2);
+    expect(mockedGetMealIdeasFromCart).toHaveBeenLastCalledWith(["Kiwi::Kyllingfilet", "Kiwi::Laks"], 5, "en");
   });
 });

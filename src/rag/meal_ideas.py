@@ -378,6 +378,14 @@ def _generate_ideas_from_eligible_rows(
     resolving their own source (cart item ids vs. one store's offers) and attach their
     own excluded-items field to the result -- this only ever sees what already passed
     eligibility."""
+    # A request body's max_results can be an explicit JSON `null`, not just an omitted
+    # field -- Pydantic's `Optional[int] = 5` only applies that default when the key is
+    # missing entirely, so None can and does reach here otherwise. Left unguarded,
+    # _generate_fallback_ideas's `min(max_results, ...)` raises a TypeError against
+    # None (confirmed: this crashed both /meal-ideas/from-cart and /meal-ideas/from-store).
+    if max_results is None:
+        max_results = 5
+
     # Task C8: zero eligible ingredients -- never call retrieval/generation with an
     # empty query, just report nothing to suggest.
     if not eligible_rows:

@@ -129,7 +129,11 @@ export async function getMealIdeasFromCart(
       method: "POST",
       body: JSON.stringify({ discount_item_ids: discountItemIds, max_results: maxResults, language }),
     },
-    DEFAULT_TIMEOUT_MS
+    // Same generation-fallback cost as /recipes/discounted's include_recipes=true path
+    // (up to 3 sequential LLM calls when retrieval finds nothing usable, see
+    // meal_ideas.py's _generate_fallback_ideas) -- give it the same longer budget
+    // rather than the plain DEFAULT_TIMEOUT_MS other, single-call endpoints use.
+    DISCOUNTED_TIMEOUT_MS
   );
 
   if (!Array.isArray(data.ideas) || !Array.isArray(data.excluded_cart_items)) {
@@ -149,7 +153,8 @@ export async function getMealIdeasFromStore(
       method: "POST",
       body: JSON.stringify({ store_name: storeName, max_results: maxResults, language }),
     },
-    DEFAULT_TIMEOUT_MS
+    // See getMealIdeasFromCart's comment -- same up-to-3-sequential-LLM-call cost.
+    DISCOUNTED_TIMEOUT_MS
   );
 
   if (!Array.isArray(data.ideas) || !Array.isArray(data.excluded_store_items)) {

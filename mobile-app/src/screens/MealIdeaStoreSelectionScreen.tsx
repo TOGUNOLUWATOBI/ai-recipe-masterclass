@@ -1,13 +1,20 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { getDiscountedRecipes } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { MealIdeasStackParamList } from "../navigation/types";
-import { groupByStore } from "./StoresScreen";
+import { FALLBACK_STORE_LABEL, groupByStore } from "./StoresScreen";
+
+// Same "no real store name" convention meal_ideas.py's resolve_store_items()/
+// _discount_item_id() already use server-side -- must match exactly, since this is
+// the value actually sent as the store_name filter. groupByStore()'s own
+// FALLBACK_STORE_LABEL ("Other deals") is a *display* label only; translated back to
+// this at navigation time below rather than sent to the backend as-is.
+const UNKNOWN_STORE_VALUE = "unknown-store";
 
 // Epic E2: loads the same cached discount snapshot the Tilbud tab already reads
 // (include_recipes=false -- a fast cache read, no LLM call) purely to list which
@@ -21,27 +28,37 @@ export function MealIdeaStoreSelectionScreen() {
   const [storeNames, setStoreNames] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setErrorMessage(null);
-    try {
-      const result = await getDiscountedRecipes(50, false);
-      if (result.error) {
-        setErrorMessage(result.error);
-      } else {
-        const groups = groupByStore(result.discounted_ingredients);
-        setStoreNames(groups.map((g) => g.storeName));
-      }
-    } catch (err) {
-      setErrorMessage(userMessageForError(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+    getDiscountedRecipes(50, false)
+      .then((result) => {
+        if (cancelled) return;
+        if (result.error) {
+          setErrorMessage(result.error);
+          return;
+        }
+        // Only stores with at least one recipe_eligible offer -- a store whose
+        // current offers are entirely non-food/ineligible would always land on the
+        // results screen's empty state, a dead end this list can rule out up front.
+        const groups = groupByStore(result.discounted_ingredients).filter((g) =>
+          g.deals.some((d) => d.recipe_eligible)
+        );
+        setStoreNames(groups.map((g) => g.storeName));
+      })
+      .catch((err) => {
+        if (!cancelled) setErrorMessage(userMessageForError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -61,7 +78,16 @@ export function MealIdeaStoreSelectionScreen() {
           <TouchableOpacity
             key={storeName}
             style={styles.row}
-            onPress={() => navigation.navigate("MealIdeasResults", { source: "store", storeName })}
+            onPress={() =>
+              navigation.navigate("MealIdeasResults", {
+                source: "store",
+                // groupByStore()'s display label must never be sent to the backend
+                // as the actual store_name filter -- translate it back to the same
+                // fallback value meal_ideas.py's resolve_store_items() already uses
+                // for a null store_name, so this bucket can actually resolve there.
+                storeName: storeName === FALLBACK_STORE_LABEL ? UNKNOWN_STORE_VALUE : storeName,
+              })
+            }
             testID="store-selection-row"
           >
             <Text style={styles.rowText}>{storeName}</Text>

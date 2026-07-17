@@ -12,7 +12,12 @@ import { useLanguage } from "../i18n/LanguageContext";
 import type { StoreGroup, TilbudStackParamList } from "../navigation/types";
 import type { DiscountedProduct, DiscountedResponse } from "../types/api";
 
-const FALLBACK_STORE_LABEL = "Other deals";
+// Exported so other screens that reuse groupByStore() (e.g. MealIdeaStoreSelectionScreen)
+// can tell a real store name apart from this display-only placeholder -- it must never
+// be sent to the backend as an actual store_name filter value (see that screen's own
+// translation back to the "unknown-store" convention meal_ideas.py's
+// resolve_store_items()/_discount_item_id() already use for the same null case).
+export const FALLBACK_STORE_LABEL = "Other deals";
 
 // "Food" covers both main_food and snack -- snacks are still food, just not something
 // recipe generation uses (see grocery_discounts.classify_product() on the backend). A

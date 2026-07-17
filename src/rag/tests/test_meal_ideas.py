@@ -337,6 +337,23 @@ def test_caps_ideas_at_max_results_after_ranking():
     assert len(result["ideas"]) == 2
 
 
+def test_max_results_none_does_not_crash_the_generation_fallback():
+    """A request body's max_results can be an explicit JSON `null`, not just an
+    omitted field -- Pydantic's `Optional[int] = 5` only applies that default when the
+    key is missing entirely, so None can reach here. Must fall back to a sane default
+    instead of crashing _generate_fallback_ideas's min(max_results, ...)."""
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = []
+    pipeline.generator.generate.return_value = (
+        "### Chicken Rice Bowl\n\n**Ingredients:**\n- chicken breast\n\n**Instructions:**\n1. Cook everything."
+    )
+    discounts = [_row("KYLLINGFILET")]
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"], max_results=None)
+
+    assert len(result["ideas"]) > 0
+
+
 def test_falls_back_to_generation_when_retrieval_returns_nothing(monkeypatch):
     pipeline = MagicMock()
     pipeline.find_recipes_from_ingredients.return_value = []
