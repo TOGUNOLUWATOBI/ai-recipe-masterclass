@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import React, { useCallback, useEffect, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import React, { useCallback, useState } from "react";
 import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getDiscountedRecipes } from "../api/client";
@@ -34,20 +35,27 @@ export function CartScreen() {
   // session -- never a hard error blocking the cart itself from being usable.
   const [currentOfferIds, setCurrentOfferIds] = useState<Set<string> | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    getDiscountedRecipes(10, false, language)
-      .then((response) => {
-        if (cancelled) return;
-        setCurrentOfferIds(new Set(response.discounted_ingredients.map((d) => cartItemIdFor(d))));
-      })
-      .catch(() => {
-        if (!cancelled) setCurrentOfferIds(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [language]);
+  // useFocusEffect (not a mount-only useEffect) -- the discount snapshot refreshes on
+  // its own cron schedule (see refresh_discounts.py) independently of anything this
+  // screen does, so a user who adds items, browses Tilbud/Ask for a while, then comes
+  // back to Cart needs this re-checked against whatever's current now, not whatever it
+  // was the one time Cart first mounted this session.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      getDiscountedRecipes(10, false, language)
+        .then((response) => {
+          if (cancelled) return;
+          setCurrentOfferIds(new Set(response.discounted_ingredients.map((d) => cartItemIdFor(d))));
+        })
+        .catch(() => {
+          if (!cancelled) setCurrentOfferIds(null);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [language])
+  );
 
   const handleClearCart = useCallback(() => {
     Alert.alert(t.clearCartConfirmTitle, t.clearCartConfirmMessage, [

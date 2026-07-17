@@ -10,6 +10,23 @@ import { renderWithProviders } from "../../test-utils/testUtils";
 jest.mock("../../src/api/client");
 const mockedGetDiscountedRecipes = getDiscountedRecipes as jest.MockedFunction<typeof getDiscountedRecipes>;
 
+// CartScreen renders with no real NavigationContainer/navigator in these tests (see
+// renderWithProviders) -- the real useFocusEffect calls useNavigation() internally and
+// throws outside one. Stand in with a mount effect, and expose the registered callback
+// via mockRunFocusEffect so a test can simulate the Cart tab regaining focus.
+const mockRunFocusEffect = jest.fn();
+jest.mock("@react-navigation/native", () => {
+  const actual = jest.requireActual("@react-navigation/native");
+  const ReactActual = require("react");
+  return {
+    ...actual,
+    useFocusEffect: (effect: () => void | (() => void)) => {
+      mockRunFocusEffect.mockImplementation(effect);
+      ReactActual.useEffect(effect, [effect]);
+    },
+  };
+});
+
 function cartItem(overrides: Partial<CartItem>): CartItem {
   return {
     cart_item_id: "Kiwi::Kyllingfilet",
@@ -63,6 +80,7 @@ describe("CartScreen", () => {
     await AsyncStorage.clear();
     mockedGetDiscountedRecipes.mockReset();
     mockedGetDiscountedRecipes.mockResolvedValue(discountedResponseFor([]));
+    mockRunFocusEffect.mockReset();
   });
 
   it("shows an empty state when the cart has no items", async () => {
@@ -202,6 +220,26 @@ describe("CartScreen", () => {
 
     await screen.findByText("Kyllingfilet");
     expect(screen.queryByTestId("expired-badge")).toBeNull();
+  });
+
+  it("re-fetches the discount snapshot when the Cart tab regains focus", async () => {
+    const items = [cartItem({})];
+    mockedGetDiscountedRecipes.mockResolvedValue(discountedResponseFor(items));
+    await seedCart(items);
+
+    await renderWithProviders(<CartScreen />);
+    await screen.findByText("Kyllingfilet");
+
+    expect(mockedGetDiscountedRecipes).toHaveBeenCalledTimes(1);
+
+    // Simulates the Cart tab regaining focus after the user browsed elsewhere -- the
+    // snapshot may have changed in the background (cron-refreshed), so this must not
+    // just be a mount-only fetch.
+    await act(async () => {
+      mockRunFocusEffect();
+    });
+
+    expect(mockedGetDiscountedRecipes).toHaveBeenCalledTimes(2);
   });
 
   it("a failed snapshot fetch does not flag anything as expired or break the screen", async () => {
