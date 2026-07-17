@@ -1,6 +1,6 @@
 import type { RouteProp } from "@react-navigation/native";
 import { useRoute } from "@react-navigation/native";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 import { getMealIdeasFromCart, getMealIdeasFromStore } from "../api/client";
 import { userMessageForError } from "../api/errors";
@@ -83,6 +83,24 @@ export function MealIdeaResultsScreen() {
 
   const params = route.params;
 
+  // Only ever the items the user actually opted in for meal ideas (Epic B4's
+  // selection, see CartContext.toggleMealIdeaSelection) -- an ineligible item can
+  // never be selected in the first place, but this stays explicit rather than relying
+  // on that invariant holding elsewhere. Memoized as a stable, order-independent
+  // primitive (not the raw array) so the fetch effect below only re-runs when the
+  // actual set of eligible+selected ids changes -- `items` itself gets a new array
+  // reference on every cart mutation (quantity bumps, unrelated add/remove), and
+  // depending on that directly would re-fetch on every one of those, even ones
+  // unrelated to what's actually selected, and even for the store-sourced flow, which
+  // never uses the cart at all.
+  const eligibleSelectedIdsKey = useMemo(
+    () =>
+      JSON.stringify(
+        items.filter((item) => item.recipe_eligible && item.selected_for_meal_ideas).map((item) => item.discount_item_id)
+      ),
+    [items]
+  );
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -92,13 +110,7 @@ export function MealIdeaResultsScreen() {
     async function load() {
       try {
         if (params.source === "cart") {
-          // Only ever the items the user actually opted in for meal ideas (Epic B4's
-          // selection, see CartContext.toggleMealIdeaSelection) -- an ineligible item
-          // can never be selected in the first place, but this stays explicit rather
-          // than relying on that invariant holding elsewhere.
-          const eligibleSelectedIds = items
-            .filter((item) => item.recipe_eligible && item.selected_for_meal_ideas)
-            .map((item) => item.discount_item_id);
+          const eligibleSelectedIds: string[] = JSON.parse(eligibleSelectedIdsKey);
           if (eligibleSelectedIds.length === 0) {
             if (!cancelled) {
               setIdeas([]);
@@ -123,7 +135,10 @@ export function MealIdeaResultsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [params, items, language]);
+    // `language` is intentionally still a dependency for forward-compatibility, even
+    // though meal_ideas.py doesn't translate ideas yet (see its own docstring) -- once
+    // it does, a language change should refetch, same as every other endpoint here.
+  }, [params, eligibleSelectedIdsKey, language]);
 
   const missingLabel = params.source === "cart" ? t.mealIdeasStillNeedLabel : t.mealIdeasNotFoundInOffersLabel;
   const sourceHeading = params.source === "cart" ? t.mealIdeasResultsFromCart : t.mealIdeasResultsFromStore(params.storeName);

@@ -29,6 +29,7 @@ function deal(overrides: Partial<DiscountedProduct>): DiscountedProduct {
     image_url: null,
     store_name: "Kiwi",
     store_logo_url: null,
+    recipe_eligible: true,
     ...overrides,
   };
 }
@@ -63,6 +64,20 @@ describe("MealIdeaStoreSelectionScreen", () => {
     expect(screen.getAllByTestId("store-selection-row")).toHaveLength(2);
   });
 
+  it("excludes a store whose current offers are entirely ineligible", async () => {
+    mockedGetDiscountedRecipes.mockResolvedValue(
+      discountedResponseFor([
+        deal({ store_name: "Kiwi", recipe_eligible: true }),
+        deal({ store_name: "OnlyNonFood", product_name: "Toalettpapir", recipe_eligible: false }),
+      ])
+    );
+
+    await renderWithProviders(<MealIdeaStoreSelectionScreen />);
+
+    expect(await screen.findByText("Kiwi")).toBeTruthy();
+    expect(screen.queryByText("OnlyNonFood")).toBeNull();
+  });
+
   it("never requests recipe generation -- a fast cache read only (Task E2's hard rule)", async () => {
     mockedGetDiscountedRecipes.mockResolvedValue(discountedResponseFor([deal({})]));
 
@@ -90,6 +105,22 @@ describe("MealIdeaStoreSelectionScreen", () => {
     await user.press(screen.getByText("Kiwi"));
 
     expect(mockNavigate).toHaveBeenCalledWith("MealIdeasResults", { source: "store", storeName: "Kiwi" });
+  });
+
+  it("translates the 'Other deals' display label back to the backend's null-store-name convention on navigation", async () => {
+    // A null store_name is grouped under the display label "Other deals" (see
+    // StoresScreen's groupByStore()), but the backend's resolve_store_items()/
+    // _discount_item_id() fall back to "unknown-store" for the same case -- sending
+    // "Other deals" verbatim would never resolve server-side.
+    mockedGetDiscountedRecipes.mockResolvedValue(discountedResponseFor([deal({ store_name: null })]));
+    const user = userEvent.setup();
+
+    await renderWithProviders(<MealIdeaStoreSelectionScreen />);
+    await screen.findByText("Other deals");
+
+    await user.press(screen.getByText("Other deals"));
+
+    expect(mockNavigate).toHaveBeenCalledWith("MealIdeasResults", { source: "store", storeName: "unknown-store" });
   });
 
   it("shows an error banner when the fetch fails", async () => {
