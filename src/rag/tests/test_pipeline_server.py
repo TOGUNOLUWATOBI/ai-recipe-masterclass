@@ -397,6 +397,38 @@ def test_ingredient_offers_request_defaults():
     assert req.max_offers_per_ingredient == 5
 
 
+def test_ingredient_offers_preserves_an_explicit_zero_max_offers(monkeypatch):
+    """`or 5` would treat an explicitly-requested 0 the same as an omitted field
+    (falsy-zero) and silently substitute 5 -- 0 must be honored as-is."""
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: ([], "2026-07-16T05:00:00Z"))
+    monkeypatch.setattr(pipeline_server, "get_ingredient_index_rows", lambda db_path: [])
+
+    seen = []
+    monkeypatch.setattr(
+        pipeline_server, "match_ingredient_offers",
+        lambda ingredient_name, rows, max_offers=5: seen.append(max_offers) or [],
+    )
+
+    ingredient_offers(IngredientOffersRequest(ingredients=["chicken fillet"], max_offers_per_ingredient=0))
+
+    assert seen == [0]
+
+
+def test_ingredient_offers_floors_a_negative_max_offers_at_zero(monkeypatch):
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: ([], "2026-07-16T05:00:00Z"))
+    monkeypatch.setattr(pipeline_server, "get_ingredient_index_rows", lambda db_path: [])
+
+    seen = []
+    monkeypatch.setattr(
+        pipeline_server, "match_ingredient_offers",
+        lambda ingredient_name, rows, max_offers=5: seen.append(max_offers) or [],
+    )
+
+    ingredient_offers(IngredientOffersRequest(ingredients=["chicken fillet"], max_offers_per_ingredient=-1))
+
+    assert seen == [0]
+
+
 def test_ingredient_offers_reads_the_index_and_delegates_to_match_ingredient_offers(monkeypatch):
     """The endpoint itself is a thin adapter -- fetch the current index and snapshot
     freshness, hand each ingredient straight to ingredient_index.match_ingredient_offers()

@@ -53,6 +53,21 @@ def test_build_ingredient_aliases_is_empty_for_an_empty_name():
     assert build_ingredient_aliases("") == []
 
 
+def test_build_ingredient_aliases_does_not_produce_an_empty_string_alias():
+    """A canonical key ending in a bare 's' must not singularize to '' -- an empty
+    alias would spuriously match any query that also normalizes to an empty string."""
+    assert "" not in build_ingredient_aliases("s")
+
+
+def test_build_ingredient_aliases_leaves_invariant_nouns_unchanged():
+    """asparagus/hummus/species etc. are already both singular and plural -- the
+    ordinary pluralize/singularize rules would otherwise mangle them into a nonsense
+    word (e.g. "hummus" -> "hummu")."""
+    assert build_ingredient_aliases("asparagus") == ["asparagus"]
+    assert build_ingredient_aliases("hummus") == ["hummus"]
+    assert build_ingredient_aliases("species") == ["species"]
+
+
 # ---------------------------------------------------------------------------
 # build_ingredient_index_rows
 # ---------------------------------------------------------------------------
@@ -90,6 +105,17 @@ def test_build_ingredient_index_rows_carries_through_the_validity_window_and_sna
     assert rows[0]["snapshot_id"] == "snap-1"
 
 
+def test_build_ingredient_index_rows_skips_a_product_with_no_name():
+    """original_product_name is NOT NULL in the schema -- a discount item with no real
+    name must be skipped rather than crash the whole refresh on insert."""
+    discounts = [_discount("KYLLINGFILET"), _discount(None)]
+
+    rows = build_ingredient_index_rows(discounts, snapshot_id="s1", updated_at="2026-07-16T06:00:00Z")
+
+    assert len(rows) == 1
+    assert rows[0]["original_product_name"] == "KYLLINGFILET"
+
+
 # ---------------------------------------------------------------------------
 # match_ingredient_offers
 # ---------------------------------------------------------------------------
@@ -122,6 +148,33 @@ def test_match_ingredient_offers_finds_an_exact_key_match():
 
     assert len(matches) == 1
     assert matches[0]["match_confidence"] == "exact"
+
+
+def test_match_ingredient_offers_returns_ingredient_aliases_as_a_real_list():
+    """A caller of /ingredient-offers should never have to JSON.parse a field it
+    already received inside a JSON response -- the stored JSON-encoded column must be
+    decoded before being returned, not passed through as a raw string."""
+    rows = [_index_row("chicken fillet", aliases=["chicken fillet", "chicken fillets"])]
+
+    matches = match_ingredient_offers("chicken fillet", rows)
+
+    assert matches[0]["ingredient_aliases"] == ["chicken fillet", "chicken fillets"]
+
+
+def test_match_ingredient_offers_tolerates_malformed_alias_json():
+    """A single row with corrupted ingredient_aliases (hand-edited DB, a future writer
+    bypassing json.dumps()) must not crash the whole request -- just treat that row as
+    having no aliases and keep matching the rest."""
+    rows = [
+        _index_row("chicken fillet", aliases=None),  # placeholder, overwritten below
+        _index_row("salmon fillet", aliases=["salmon fillet", "salmon fillets"]),
+    ]
+    rows[0]["ingredient_aliases"] = "not valid json"
+
+    matches = match_ingredient_offers("salmon fillets", rows)
+
+    assert len(matches) == 1
+    assert matches[0]["original_product_name"] == "SALMON FILLET"
 
 
 def test_match_ingredient_offers_finds_an_alias_match_for_the_plural_form():
@@ -158,7 +211,10 @@ def test_match_ingredient_offers_returns_empty_offers_when_nothing_matches():
 
 def test_match_ingredient_offers_ranks_exact_above_alias_above_fuzzy():
     rows = [
-        _index_row("chicken thigh fillet", aliases=["chicken thigh fillet"]),  # fuzzy vs "chicken fillet"
+        # Jaccard overlap vs "chicken fillets": {chicken, fillets} / {diced, chicken,
+        # fillets} = 2/3 -- a genuine fuzzy match (an extra qualifier word), not two
+        # different cuts sharing only one generic word.
+        _index_row("diced chicken fillets", aliases=["diced chicken fillet", "diced chicken fillets"]),
         _index_row("chicken fillet", aliases=["chicken fillet", "chicken fillets"]),  # alias via plural query
     ]
     # add an exact-key row too

@@ -38,9 +38,20 @@ def _singularize(word: str) -> str:
         return word[:-3] + "y"
     if word.endswith(("ses", "xes", "zes", "ches", "shes", "oes")):
         return word[:-2]
-    if word.endswith("s") and not word.endswith("ss"):
+    # `len(word) > 1` guards against a bare "s" (or any single-char word) singularizing
+    # to an empty string, which would otherwise get stored as a real, spuriously-
+    # matching alias.
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 1:
         return word[:-1]
     return word
+
+
+# Common grocery-relevant nouns whose singular and plural forms are identical (or
+# whose "plural-looking" -s/-us/-es ending is not actually a plural at all) -- the
+# ordinary _pluralize/_singularize rules above would otherwise mangle them into a
+# nonsense word (e.g. "hummus" -> "hummu", "species" -> "specy"). A full irregular-
+# noun dictionary is future work; this covers the common grocery-flyer cases.
+_INVARIANT_WORDS = {"asparagus", "hummus", "couscous", "citrus", "octopus", "species", "molasses"}
 
 
 def build_ingredient_aliases(canonical_name: str) -> List[str]:
@@ -58,10 +69,14 @@ def build_ingredient_aliases(canonical_name: str) -> List[str]:
         return []
     prefix, _, last_word = name.rpartition(" ")
     prefix = f"{prefix} " if prefix else ""
-    # Only generate the one alternate form the current word actually needs -- pluralizing
-    # an already-plural word (or singularizing an already-singular one) would otherwise
-    # add a nonsensical "double plural" alias (e.g. "potatoes" -> "potatoeses").
-    other_form = _singularize(last_word) if last_word.endswith("s") else _pluralize(last_word)
+    if last_word in _INVARIANT_WORDS:
+        other_form = last_word
+    else:
+        # Only generate the one alternate form the current word actually needs --
+        # pluralizing an already-plural word (or singularizing an already-singular
+        # one) would otherwise add a nonsensical "double plural" alias (e.g.
+        # "potatoes" -> "potatoeses").
+        other_form = _singularize(last_word) if last_word.endswith("s") else _pluralize(last_word)
     aliases = {name, f"{prefix}{other_form}"}
     return sorted(aliases)
 
@@ -79,11 +94,20 @@ def build_ingredient_index_rows(
     for d in discounts:
         if not d.get("recipe_eligible"):
             continue
-        canonical = _canonical_key(d.get("product_name") or "")
+        product_name = d.get("product_name")
+        # original_product_name is NOT NULL in the schema -- skip a row with no real
+        # name entirely rather than insert one, since there'd be nothing meaningful to
+        # match against anyway (unreachable via the live Tjek pipeline today, since
+        # find_discounted_products() already filters out a falsy heading before it
+        # becomes product_name, but a future source/fixture shouldn't be able to crash
+        # the whole refresh over one bad row).
+        if not product_name:
+            continue
+        canonical = _canonical_key(product_name)
         rows.append({
             "normalized_ingredient_key": canonical,
             "ingredient_aliases": json.dumps(build_ingredient_aliases(canonical)),
-            "original_product_name": d.get("product_name"),
+            "original_product_name": product_name,
             "store_name": d.get("store_name"),
             "current_price": d.get("current_price"),
             "reference_price": d.get("reference_price"),
@@ -104,9 +128,15 @@ def build_ingredient_index_rows(
     return rows
 
 
-# Task F7: a fuzzy match needs at least half the query ingredient's significant words
-# to show up in a candidate row's own key -- deliberately conservative ("the app would
-# rather show no match than a wrong product").
+# Task F7: a fuzzy match needs at least half the two names' *combined* significant
+# words to overlap (Jaccard similarity: shared words / all distinct words across both)
+# -- deliberately conservative ("the app would rather show no match than a wrong
+# product"). Symmetric on purpose: dividing only by the query's own word count (an
+# earlier version of this) let two names sharing just one generic word (e.g. both
+# containing "chicken") count as a match regardless of how many *other*, more
+# distinguishing words the candidate had -- confirmed live to fuzzy-match "chicken
+# fillets" against an unrelated "chicken thigh fillet" row. Jaccard penalizes that
+# extra unrelated word instead of ignoring it.
 _MIN_FUZZY_WORD_OVERLAP_RATIO = 0.5
 
 
@@ -144,21 +174,32 @@ def match_ingredient_offers(
 
     for row in index_rows:
         key = row.get("normalized_ingredient_key") or ""
+        # Every returned offer carries a real decoded list, not the raw JSON-encoded
+        # column value -- a caller (e.g. the mobile app) should never have to
+        # JSON.parse a field it already received inside a JSON response.
+        try:
+            row_aliases = json.loads(row.get("ingredient_aliases") or "[]")
+        except (TypeError, ValueError):
+            # A malformed value in one row (hand-edited DB, a future writer that
+            # bypasses build_ingredient_aliases()+json.dumps()) must not crash the
+            # whole request -- just treat that row as having no aliases.
+            row_aliases = []
+        row_with_aliases = {**row, "ingredient_aliases": row_aliases}
+
         if key == target:
-            exact.append({**row, "match_confidence": "exact"})
+            exact.append({**row_with_aliases, "match_confidence": "exact"})
             continue
 
-        row_aliases = json.loads(row.get("ingredient_aliases") or "[]")
         if target in row_aliases:
-            alias.append({**row, "match_confidence": "alias"})
+            alias.append({**row_with_aliases, "match_confidence": "alias"})
             continue
 
         row_words = set(_significant_words(key))
         if not target_words or not row_words:
             continue
-        overlap_ratio = len(target_words & row_words) / len(target_words)
+        overlap_ratio = len(target_words & row_words) / len(target_words | row_words)
         if overlap_ratio >= _MIN_FUZZY_WORD_OVERLAP_RATIO:
-            fuzzy.append({**row, "match_confidence": "fuzzy"})
+            fuzzy.append({**row_with_aliases, "match_confidence": "fuzzy"})
 
     ranked = sorted(exact, key=_by_unit_price) + sorted(alias, key=_by_unit_price) + sorted(fuzzy, key=_by_unit_price)
     return ranked[:max_offers]

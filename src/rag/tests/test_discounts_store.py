@@ -386,10 +386,10 @@ def test_rebuild_and_get_ingredient_index_roundtrip(db_path):
     assert row["original_product_name"] == "KYLLINGFILET"
     assert row["valid_from"] == "2026-07-13T00:00:00Z"
     assert row["valid_until"] == "2026-07-19T23:59:59Z"
-    # SQLite has no native boolean -- stored as 0/1, read back as an int (unlike
-    # get_latest_snapshot(), this table has no caller that needs a coerced real bool
-    # yet; ingredient_index.py's own matching logic only ever checks truthiness).
-    assert bool(row["recipe_eligible"]) is True
+    # SQLite has no native boolean -- stored as 0/1, coerced back to a real bool here
+    # the same way get_latest_snapshot() already does for this field on the sibling
+    # `discounts` table, so a caller can safely use it in a boolean context.
+    assert row["recipe_eligible"] is True
 
 
 def test_rebuild_ingredient_index_replaces_the_previous_build_wholesale():
@@ -408,3 +408,47 @@ def test_rebuild_ingredient_index_with_no_rows_clears_the_table(db_path):
     rebuild_ingredient_index(db_path, [])
 
     assert get_ingredient_index_rows(db_path) == []
+
+
+def test_save_and_get_roundtrip_carries_through_the_validity_window(db_path):
+    """Epic F1: the flyer's own real valid_from/valid_until must survive a round trip
+    through the main `discounts` table too, not just the separate ingredient index --
+    any future consumer of get_latest_snapshot() (not just the ingredient index) needs
+    to see the real validity window."""
+    item = {**_SAMPLE[0], "valid_from": "2026-07-13T00:00:00Z", "valid_until": "2026-07-19T23:59:59Z"}
+    save_snapshot(db_path, [item], scanned_at="2026-07-16T06:00:00+00:00")
+
+    discounts, _ = get_latest_snapshot(db_path)
+
+    assert discounts[0]["valid_from"] == "2026-07-13T00:00:00Z"
+    assert discounts[0]["valid_until"] == "2026-07-19T23:59:59Z"
+
+
+def test_save_and_get_roundtrip_defaults_validity_window_to_none_when_absent(db_path):
+    """Backward compatible with fixtures/rows written before valid_from/valid_until
+    existed -- a missing key must not raise, just round-trip as None."""
+    save_snapshot(db_path, _SAMPLE, scanned_at="2026-07-16T06:00:00+00:00")
+
+    discounts, _ = get_latest_snapshot(db_path)
+
+    assert all(d["valid_from"] is None and d["valid_until"] is None for d in discounts)
+
+
+def test_shared_connection_writes_are_only_durable_after_the_owning_block_exits():
+    """Epic F2 atomicity fix: two writes sharing one connection (the refresh_discounts.py
+    pattern) must not be independently committed -- a crash/exception before the owning
+    open_connection() block exits must leave neither write durable, not just the first
+    one."""
+    from rag.discounts_store import open_connection
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = str(Path(tmp) / "discounts.db")
+
+        with pytest.raises(RuntimeError):
+            with open_connection(db_path) as conn:
+                rebuild_ingredient_index(db_path, [_index_row()], conn=conn)
+                raise RuntimeError("simulated mid-refresh crash")
+
+        # Reading with a fresh, separate connection -- the crashed run's write must
+        # not be visible at all, since it was never committed.
+        assert get_ingredient_index_rows(db_path) == []
