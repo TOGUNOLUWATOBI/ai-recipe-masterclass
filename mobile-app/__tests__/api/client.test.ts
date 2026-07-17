@@ -1,6 +1,7 @@
 import {
   askQuestion,
   getDiscountedRecipes,
+  getIngredientOffers,
   getMealIdeasFromCart,
   getMealIdeasFromStore,
   getRecipesFromIngredients,
@@ -306,6 +307,37 @@ describe("getMealIdeasFromStore", () => {
   it("throws ApiError('invalid_response', ...) when excluded_store_items is missing", async () => {
     mockFetchOnce({ ideas: [], store_name: "Kiwi", source: null });
     await expect(getMealIdeasFromStore("Kiwi")).rejects.toMatchObject({ kind: "invalid_response" });
+  });
+});
+
+describe("getIngredientOffers", () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it("posts ingredients/max_offers_per_ingredient and returns the parsed response", async () => {
+    mockFetchOnce({ snapshot_updated_at: "2026-07-16T05:00:00Z", ingredients: [{ ingredient: "chicken fillet", offers: [] }] });
+
+    const result = await getIngredientOffers(["chicken fillet"], 2);
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toContain("/ingredient-offers");
+    expect(JSON.parse(options.body)).toEqual({ ingredients: ["chicken fillet"], max_offers_per_ingredient: 2 });
+    expect(result.ingredients).toHaveLength(1);
+  });
+
+  it("defaults max_offers_per_ingredient to 3", async () => {
+    mockFetchOnce({ snapshot_updated_at: null, ingredients: [] });
+
+    await getIngredientOffers(["chicken fillet"]);
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body).max_offers_per_ingredient).toBe(3);
+  });
+
+  it("throws ApiError('invalid_response', ...) when ingredients is missing", async () => {
+    mockFetchOnce({ snapshot_updated_at: null });
+    await expect(getIngredientOffers(["chicken fillet"])).rejects.toMatchObject({ kind: "invalid_response" });
   });
 });
 

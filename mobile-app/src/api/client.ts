@@ -3,6 +3,7 @@ import type { Language } from "../i18n/language";
 import type {
   DiscountedResponse,
   GeneratedRecipe,
+  IngredientOffersResponse,
   IngredientsResponse,
   MealIdeasFromCartResponse,
   MealIdeasFromStoreResponse,
@@ -159,6 +160,29 @@ export async function getMealIdeasFromStore(
 
   if (!Array.isArray(data.ideas) || !Array.isArray(data.excluded_store_items)) {
     throw new ApiError("invalid_response", "Meal ideas response was missing expected fields");
+  }
+  return data;
+}
+
+// Epic F5: a fast precomputed-index lookup, never a live scan or LLM call (Task F3) --
+// DEFAULT_TIMEOUT_MS is generous for what this actually costs, but matches the same
+// convention getDiscountedRecipes's include_recipes=false path already uses for
+// another cache-only read in this file.
+export async function getIngredientOffers(
+  ingredients: string[],
+  maxOffersPerIngredient = 3
+): Promise<IngredientOffersResponse> {
+  const data = await fetchJson<IngredientOffersResponse>(
+    "/ingredient-offers",
+    {
+      method: "POST",
+      body: JSON.stringify({ ingredients, max_offers_per_ingredient: maxOffersPerIngredient }),
+    },
+    DEFAULT_TIMEOUT_MS
+  );
+
+  if (!Array.isArray(data.ingredients)) {
+    throw new ApiError("invalid_response", "Ingredient offers response was missing expected fields");
   }
   return data;
 }
