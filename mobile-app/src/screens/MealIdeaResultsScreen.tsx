@@ -1,14 +1,14 @@
 import type { RouteProp } from "@react-navigation/native";
 import { useRoute } from "@react-navigation/native";
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
-import { getMealIdeasFromCart, getMealIdeasFromStore } from "../api/client";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { getIngredientOffers, getMealIdeasFromCart, getMealIdeasFromStore } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { useCart } from "../cart/CartContext";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { MealIdeasStackParamList } from "../navigation/types";
-import type { MealIdea } from "../types/api";
+import type { IngredientOffer, MealIdea } from "../types/api";
 
 const COMPLETION_LABEL_KEY = {
   complete: "mealIdeasCompletionComplete",
@@ -22,13 +22,103 @@ const COMPLETION_COLOR: Record<MealIdea["completion_status"], string> = {
   partial: "#888888",
 };
 
+// Epic F5: how many offers /ingredient-offers returns per ingredient -- shown one at
+// a time with a "view more" toggle (Task F6), so this just needs to cover the small
+// initial list plus whatever a user might reasonably want to expand into.
+const MAX_OFFERS_PER_INGREDIENT = 3;
+
+function formatNok(value: number): string {
+  return `${value.toFixed(2).replace(".", ",")} kr`;
+}
+
+// Epic F7: a fuzzy match is real but uncertain -- labeled rather than hidden, so the
+// user still sees it but never mistakes it for a confirmed match.
+function OfferRow({ offer }: { offer: IngredientOffer }) {
+  const { t } = useLanguage();
+  const hasDiscount = offer.discount_pct != null && offer.reference_price != null && offer.current_price != null;
+
+  return (
+    <View style={styles.offerRow} testID="ingredient-offer-row">
+      <Text style={styles.offerText} numberOfLines={1}>
+        {offer.original_product_name}
+        {offer.store_name ? ` · ${offer.store_name}` : ""}
+        {offer.match_confidence === "fuzzy" ? ` (${t.mealIdeasPossibleMatchLabel})` : ""}
+      </Text>
+      {offer.current_price != null ? (
+        <View style={styles.offerPriceRow}>
+          <Text style={styles.offerPrice}>{formatNok(offer.current_price)}</Text>
+          {hasDiscount ? <Text style={styles.offerReferencePrice}>{formatNok(offer.reference_price as number)}</Text> : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function IngredientOfferStatus({ ingredientName, offers }: { ingredientName: string; offers: IngredientOffer[] | undefined }) {
+  const { t } = useLanguage();
+  const [expanded, setExpanded] = useState(false);
+
+  if (!offers || offers.length === 0) {
+    return (
+      <View style={styles.ingredientOfferBlock}>
+        <Text style={styles.ingredientOfferName}>{ingredientName}</Text>
+        <Text style={styles.noOfferText} testID="no-offer-found">
+          {t.mealIdeasNoOfferFound}
+        </Text>
+      </View>
+    );
+  }
+
+  const visibleOffers = expanded ? offers : offers.slice(0, 1);
+  const remaining = offers.length - visibleOffers.length;
+
+  return (
+    <View style={styles.ingredientOfferBlock}>
+      <Text style={styles.ingredientOfferName}>{ingredientName}</Text>
+      {visibleOffers.map((offer, index) => (
+        <OfferRow key={index} offer={offer} />
+      ))}
+      {remaining > 0 ? (
+        <TouchableOpacity onPress={() => setExpanded(true)} testID="view-more-offers">
+          <Text style={styles.viewMoreText}>{t.mealIdeasViewMoreOffers(remaining)}</Text>
+        </TouchableOpacity>
+      ) : null}
+      {expanded && offers.length > 1 ? (
+        <TouchableOpacity onPress={() => setExpanded(false)}>
+          <Text style={styles.viewMoreText}>{t.mealIdeasShowFewerOffers}</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
 // Epic E4/E5: shows what a suggestion uses and what's still missing without ever
 // implying the app knows a store's full inventory -- the missing-ingredients label
 // differs by source (see missingLabel prop): the user's own cart can plainly say
 // "still need", but a store-sourced idea must say "not found in the current offers"
 // rather than "unavailable" (Task E5's hard requirement).
-function MealIdeaCard({ idea, missingLabel }: { idea: MealIdea; missingLabel: string }) {
+function MealIdeaCard({
+  idea,
+  missingLabel,
+  offersByIngredient,
+}: {
+  idea: MealIdea;
+  missingLabel: string;
+  offersByIngredient: Record<string, IngredientOffer[]>;
+}) {
   const { t } = useLanguage();
+  // Epic F5: "On offer this week" covers both required and optional ingredients --
+  // deduped, since the same name could in principle appear in both lists.
+  const onOfferIngredientNames = useMemo(() => {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const ing of [...idea.required_ingredients, ...idea.optional_ingredients]) {
+      if (seen.has(ing.name)) continue;
+      seen.add(ing.name);
+      names.push(ing.name);
+    }
+    return names;
+  }, [idea.required_ingredients, idea.optional_ingredients]);
 
   return (
     <View style={styles.card} testID="meal-idea-card">
@@ -63,6 +153,15 @@ function MealIdeaCard({ idea, missingLabel }: { idea: MealIdea; missingLabel: st
       {idea.pantry_basics_assumed.length > 0 ? (
         <Text style={styles.pantryNote}>{t.mealIdeasPantryBasicsNote(idea.pantry_basics_assumed.join(", "))}</Text>
       ) : null}
+
+      {onOfferIngredientNames.length > 0 ? (
+        <View style={styles.onOfferSection} testID="on-offer-section">
+          <Text style={styles.onOfferHeading}>{t.mealIdeasOnOfferHeading}</Text>
+          {onOfferIngredientNames.map((name) => (
+            <IngredientOfferStatus key={name} ingredientName={name} offers={offersByIngredient[name]} />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -80,6 +179,11 @@ export function MealIdeaResultsScreen() {
   // doesn't, since they already selected something and there's no further action to
   // suggest.
   const [skippedEmptySelection, setSkippedEmptySelection] = useState(false);
+  // Epic F5: keyed by ingredient name -- a best-effort enhancement layered on top of
+  // the ideas themselves, so a failed/slow lookup never blocks or errors the meal
+  // ideas the user actually asked for (same "best-effort, never a hard error"
+  // convention as CartScreen's own expiry check).
+  const [offersByIngredient, setOffersByIngredient] = useState<Record<string, IngredientOffer[]>>({});
 
   const params = route.params;
 
@@ -140,6 +244,46 @@ export function MealIdeaResultsScreen() {
     // it does, a language change should refetch, same as every other endpoint here.
   }, [params, eligibleSelectedIdsKey, language]);
 
+  // Epic F5: once the ideas themselves are in, fetch current offers for every
+  // required/optional ingredient across all of them in one batched call (Task F4) --
+  // never per-card, never per-render. Best-effort: a failed lookup just leaves
+  // offersByIngredient empty (every card shows "no current offer found"), it never
+  // surfaces as a screen-level error or blocks the ideas themselves from showing.
+  useEffect(() => {
+    let cancelled = false;
+    if (ideas.length === 0) {
+      setOffersByIngredient({});
+      return;
+    }
+
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const idea of ideas) {
+      for (const ing of [...idea.required_ingredients, ...idea.optional_ingredients]) {
+        if (seen.has(ing.name)) continue;
+        seen.add(ing.name);
+        names.push(ing.name);
+      }
+    }
+
+    getIngredientOffers(names, MAX_OFFERS_PER_INGREDIENT)
+      .then((response) => {
+        if (cancelled) return;
+        const byName: Record<string, IngredientOffer[]> = {};
+        for (const entry of response.ingredients) {
+          byName[entry.ingredient] = entry.offers;
+        }
+        setOffersByIngredient(byName);
+      })
+      .catch(() => {
+        if (!cancelled) setOffersByIngredient({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ideas]);
+
   const missingLabel = params.source === "cart" ? t.mealIdeasStillNeedLabel : t.mealIdeasNotFoundInOffersLabel;
   const sourceHeading = params.source === "cart" ? t.mealIdeasResultsFromCart : t.mealIdeasResultsFromStore(params.storeName);
   const emptyMessage =
@@ -166,7 +310,9 @@ export function MealIdeaResultsScreen() {
       {!errorMessage && ideas.length === 0 ? (
         <Text style={styles.emptyText}>{emptyMessage}</Text>
       ) : (
-        ideas.map((idea, index) => <MealIdeaCard key={index} idea={idea} missingLabel={missingLabel} />)
+        ideas.map((idea, index) => (
+          <MealIdeaCard key={index} idea={idea} missingLabel={missingLabel} offersByIngredient={offersByIngredient} />
+        ))
       )}
     </ScrollView>
   );
@@ -184,4 +330,15 @@ const styles = StyleSheet.create({
   lineLabel: { fontWeight: "600", color: "#1a1a1a" },
   pantryNote: { fontSize: 12, color: "#888", fontStyle: "italic", marginTop: 4 },
   emptyText: { textAlign: "center", marginTop: 40, color: "#666", fontSize: 14 },
+  onOfferSection: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: "#f0f0f0", gap: 8 },
+  onOfferHeading: { fontSize: 12, fontWeight: "700", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: 0.3 },
+  ingredientOfferBlock: { gap: 2 },
+  ingredientOfferName: { fontSize: 12, fontWeight: "600", color: "#555" },
+  noOfferText: { fontSize: 12, color: "#999", fontStyle: "italic" },
+  offerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
+  offerText: { fontSize: 13, color: "#333", flex: 1 },
+  offerPriceRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  offerPrice: { fontSize: 13, fontWeight: "700", color: "#e63946" },
+  offerReferencePrice: { fontSize: 11, color: "#999", textDecorationLine: "line-through" },
+  viewMoreText: { fontSize: 12, color: "#e63946", fontWeight: "600" },
 });

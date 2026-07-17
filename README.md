@@ -213,10 +213,13 @@ predictable regardless of how permissive Tjek's API happens to be.
   entry points: from the cart's selected ingredients, or from one store's current
   offers). Tapping a deal generates a recipe for that one product on demand rather
   than generating for the whole list up front.
-- ✅ Epic F (backend): `discount_ingredient_index` (`rag/ingredient_index.py`),
-  rebuilt once per discount refresh, and `POST /ingredient-offers` — exact/alias/fuzzy
-  ingredient-to-offer matching with no live scan/LLM call on the request path (F1-F4).
-  Not yet wired into a recipe-page "Where to buy on offer" UI (F5-F7, P1) — the mobile
-  side of that is still open.
-- ⏳ v2 reverse ingredient-sourcing (given a recipe, find where to buy ingredients
-  cheapest) — backend foundation now in place (see above); no mobile UI yet
+- ✅ Epic F: `discount_ingredient_index` (`rag/ingredient_index.py`), rebuilt once per
+  discount refresh, and `POST /ingredient-offers` — exact/alias/fuzzy ingredient-to-offer
+  matching with no live scan/LLM call on the request path (F1-F4). Every Meal Idea card
+  now shows an "On offer this week" section per required/optional ingredient (F5) —
+  product name, store, and price, or "No current offer found" (never "unavailable")
+  when nothing matches; a short initial list per ingredient with a "View more offers"
+  expand (F6, ranked by unit price ascending); a fuzzy match is labeled "Possible match"
+  rather than shown with full confidence (F7).
+- ✅ v2 reverse ingredient-sourcing (given a recipe/meal idea, find where to buy its
+  ingredients) — end to end: precomputed index → API → mobile UI.

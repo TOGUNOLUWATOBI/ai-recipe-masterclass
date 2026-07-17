@@ -170,3 +170,40 @@ export interface MealIdeasFromStoreResponse {
   store_name: string;
   source: MealIdeaSource;
 }
+
+// Epic F: mirrors rag/ingredient_index.py's match_ingredient_offers() output --
+// POST /ingredient-offers returns these for each requested ingredient name, read from
+// the precomputed discount_ingredient_index (never a live scan/LLM call, Task F3).
+export type MatchConfidence = "exact" | "alias" | "fuzzy";
+
+export interface IngredientOffer {
+  normalized_ingredient_key: string;
+  ingredient_aliases: string[];
+  original_product_name: string;
+  store_name: string | null;
+  current_price: number | null;
+  reference_price: number | null;
+  discount_pct: number | null;
+  unit_price: number | null;
+  unit_price_unit: string | null;
+  image_url: string | null;
+  store_logo_url: string | null;
+  // The flyer's own real validity window (grocery_discounts.py's run_from/run_till) --
+  // null for an older cached row written before Epic F1 carried these through.
+  valid_from: string | null;
+  valid_until: string | null;
+  shopping_group: ShoppingGroup | null;
+  food_usage_class: FoodUsageClass | null;
+  meal_role: MealRole | null;
+  recipe_eligible: boolean;
+  snapshot_id: string | null;
+  updated_at: string | null;
+  // exact/alias/fuzzy (Task F7) -- a caller should hide or visibly label a "fuzzy"
+  // match rather than presenting it with the same trust as an exact/alias one.
+  match_confidence: MatchConfidence;
+}
+
+export interface IngredientOffersResponse {
+  snapshot_updated_at: string | null;
+  ingredients: { ingredient: string; offers: IngredientOffer[] }[];
+}

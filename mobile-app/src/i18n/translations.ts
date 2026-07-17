@@ -68,6 +68,11 @@ export const translations = {
     mealIdeasNotFoundInOffersLabel: "Not found in the current offers:",
     mealIdeasOptionalLabel: "Optional:",
     mealIdeasPantryBasicsNote: (items: string) => `You may already have this at home: ${items}`,
+    mealIdeasOnOfferHeading: "On offer this week",
+    mealIdeasNoOfferFound: "No current offer found",
+    mealIdeasPossibleMatchLabel: "Possible match",
+    mealIdeasViewMoreOffers: (count: number) => `View ${count} more offer${count === 1 ? "" : "s"}`,
+    mealIdeasShowFewerOffers: "Show fewer offers",
 
     dealDetailRecipesWith: (productName: string) => `Recipes with ${productName}`,
     dealDetailEmpty: "No recipes found for this item.",
@@ -145,6 +150,11 @@ export const translations = {
     mealIdeasNotFoundInOffersLabel: "Ikke funnet i gjeldende tilbud:",
     mealIdeasOptionalLabel: "Valgfritt:",
     mealIdeasPantryBasicsNote: (items: string) => `Du har kanskje dette hjemme allerede: ${items}`,
+    mealIdeasOnOfferHeading: "På tilbud denne uken",
+    mealIdeasNoOfferFound: "Ingen gjeldende tilbud funnet",
+    mealIdeasPossibleMatchLabel: "Mulig treff",
+    mealIdeasViewMoreOffers: (count: number) => `Vis ${count} tilbud til`,
+    mealIdeasShowFewerOffers: "Vis færre tilbud",
 
     dealDetailRecipesWith: (productName: string) => `Oppskrifter med ${productName}`,
     dealDetailEmpty: "Ingen oppskrifter funnet for denne varen.",
