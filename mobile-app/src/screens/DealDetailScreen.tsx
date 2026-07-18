@@ -32,9 +32,13 @@ export function DealDetailScreen() {
   // already-tested /recipes/from-ingredients endpoint — cheaper and far faster than
   // generating recipes for every discounted item up front when only one gets viewed.
   //
-  // The initial request only asks for 1 recipe: the backend's fallback-generation path
-  // is hard-capped at 3 sequential LLM calls no matter what max_results is requested, so
-  // asking for 1 up front turns a ~97s worst case into ~32s. Further recipes are fetched
+  // The initial request asks for 3 recipes up front, trading a worse worst case for a
+  // better common case: the backend's fallback-generation path is hard-capped at 3
+  // sequential LLM calls no matter what max_results is requested, so a product with zero
+  // corpus coverage now costs the full ~97s on first load instead of ~32s. But most
+  // grocery ingredients DO have real corpus matches (retrieval-only, no LLM calls at
+  // all), where asking for 3 up front is just as fast as asking for 1 — so the common
+  // case gets three recipes immediately instead of one. Further recipes are fetched
   // lazily via the "Show more" button below (see handleShowMore) — the response for a
   // larger max_results is a prefix-stable superset of a smaller one, so it's always safe
   // to replace `result` with the new response wholesale.
@@ -45,7 +49,7 @@ export function DealDetailScreen() {
     setResult(null);
     setCanShowMore(false);
     setShowMoreErrorMessage(null);
-    getRecipesFromIngredients([deal.product_name], 1, true, language)
+    getRecipesFromIngredients([deal.product_name], 3, true, language)
       .then((response) => {
         if (cancelled) return;
         if (response.error) {
