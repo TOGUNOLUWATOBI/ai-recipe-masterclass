@@ -195,6 +195,24 @@ def test_match_ingredient_offers_finds_a_fuzzy_match_via_shared_words():
     assert matches[0]["match_confidence"] == "fuzzy"
 
 
+def test_match_ingredient_offers_finds_a_norwegian_sourced_alias_match():
+    """Task I5 regression: a real Norwegian flyer heading (not a hand-typed English
+    key like the alias tests above) normalizes to an English canonical key via
+    build_ingredient_index_rows() -- see grocery_terms.GROCERY_GLOSSARY's
+    "kyllingfilet" -> "chicken fillet" -- and an English recipe ingredient written in
+    a different grammatical number than that canonical key still finds it, via the
+    alias tier, end to end through both build_ingredient_index_rows() and
+    match_ingredient_offers()."""
+    discounts = [_discount("KYLLINGFILET")]
+    rows = build_ingredient_index_rows(discounts, snapshot_id="s1", updated_at="2026-07-16T06:00:00Z")
+
+    matches = match_ingredient_offers("chicken fillets", rows)
+
+    assert len(matches) == 1
+    assert matches[0]["match_confidence"] == "alias"
+    assert matches[0]["original_product_name"] == "KYLLINGFILET"
+
+
 def test_match_ingredient_offers_suppresses_an_unrelated_product():
     """Task F7's hard requirement: no match beats a wrong one."""
     rows = [_index_row("lettuce")]
@@ -204,9 +222,41 @@ def test_match_ingredient_offers_suppresses_an_unrelated_product():
     assert matches == []
 
 
+def test_match_ingredient_offers_suppresses_a_low_overlap_fuzzy_candidate():
+    """Task F7 regression named in this module's own _MIN_FUZZY_WORD_OVERLAP_RATIO
+    docstring: "chicken fillets" vs "chicken thigh fillet" share only "chicken" out of
+    four combined distinct significant words (chicken, fillets, thigh, fillet) -- a
+    0.25 Jaccard ratio, below the 0.5 cutoff. Unlike the unrelated-product test above
+    (zero word overlap), this is a *low but nonzero* overlap case -- it must still be
+    suppressed entirely (excluded from the results), not merely labeled or ranked
+    last, since a low-confidence spurious candidate should never be presented at all."""
+    rows = [_index_row("chicken thigh fillet", aliases=["chicken thigh fillet"])]
+
+    matches = match_ingredient_offers("chicken fillets", rows)
+
+    assert matches == []
+
+
 def test_match_ingredient_offers_returns_empty_offers_when_nothing_matches():
     matches = match_ingredient_offers("chicken fillet", [])
     assert matches == []
+
+
+def test_match_ingredient_offers_returns_offers_from_every_store_carrying_the_ingredient():
+    """A single ingredient on offer at several different stores in the same refresh
+    must surface all of them, not just one -- matching happens per index row, never
+    deduplicated down to a single store per ingredient key."""
+    rows = [
+        _index_row("chicken fillet", store_name="Kiwi"),
+        _index_row("chicken fillet", store_name="Meny"),
+        _index_row("chicken fillet", store_name="Rema 1000"),
+    ]
+
+    matches = match_ingredient_offers("chicken fillet", rows)
+
+    assert len(matches) == 3
+    assert {m["store_name"] for m in matches} == {"Kiwi", "Meny", "Rema 1000"}
+    assert all(m["match_confidence"] == "exact" for m in matches)
 
 
 def test_match_ingredient_offers_ranks_exact_above_alias_above_fuzzy():
@@ -238,6 +288,22 @@ def test_match_ingredient_offers_ranks_by_unit_price_ascending_within_a_tier():
     assert [m["store_name"] for m in matches] == ["Kiwi", "Meny"]
 
 
+def test_match_ingredient_offers_ranks_the_cheaper_per_unit_pack_first_despite_a_higher_total_price():
+    """Task F6 regression: ranking must compare offers by unit price (price per
+    kg/liter/etc), never by raw current_price alone -- a small pack can have a lower
+    total price than a large pack while still being the worse per-unit deal. Here the
+    small pack's current_price (20.0) is well below the large pack's (90.0), but the
+    large pack is the cheaper deal per kg (60.0 vs 100.0) and must rank first."""
+    rows = [
+        _index_row("chicken fillet", store_name="SmallPack", current_price=20.0, unit_price=100.0),
+        _index_row("chicken fillet", store_name="LargePack", current_price=90.0, unit_price=60.0),
+    ]
+
+    matches = match_ingredient_offers("chicken fillet", rows)
+
+    assert [m["store_name"] for m in matches] == ["LargePack", "SmallPack"]
+
+
 def test_match_ingredient_offers_puts_a_missing_unit_price_last():
     rows = [
         _index_row("chicken fillet", store_name="NoUnitPrice", unit_price=None),
@@ -256,3 +322,18 @@ def test_match_ingredient_offers_caps_at_max_offers():
 
     assert len(matches) == 2
     assert [m["store_name"] for m in matches] == ["Store0", "Store1"]
+
+
+def test_match_ingredient_offers_does_not_filter_out_an_expired_offer():
+    """match_ingredient_offers never re-validates valid_until against "now" -- an
+    expired offer is expected to already be gone from the index by the next daily
+    refresh (see discounts_store.rebuild_ingredient_index()'s wholesale-replace
+    pattern run once per scan), not filtered out at match time. A row whose
+    valid_until has already passed is still returned here, with its validity window
+    passed through unchanged, rather than silently dropped or re-dated."""
+    rows = [_index_row("chicken fillet", valid_from="2026-06-01T00:00:00Z", valid_until="2026-06-07T23:59:59Z")]
+
+    matches = match_ingredient_offers("chicken fillet", rows)
+
+    assert len(matches) == 1
+    assert matches[0]["valid_until"] == "2026-06-07T23:59:59Z"

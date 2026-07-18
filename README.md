@@ -65,7 +65,10 @@ src/
     grocery_discounts.py         Tjek client + flyer-offer discount logic (v2)
     discounts_store.py           SQLite cache /recipes/discounted reads from
     meal_ideas.py                 Epic C/E: cart/store -> ranked meal ideas
+    ai_policy.py                  Epic G: shared everyday-meal generation policy
     ingredient_index.py           Epic F: precomputed ingredient -> current-offer index
+    observability.py              Epic J1: structured recommendation-event logging
+    classification_report.py      Epic J2: classification-quality report
     refresh_discounts.py         cron entrypoint that populates the caches above
     cli.py                       interactive CLI for local development
     run_eval.py                  retrieval regression suite (eval_set.json)
@@ -154,6 +157,19 @@ re-embeds the full ~20k-recipe corpus from scratch).
   never a live Tjek scan, a reclassification, or an LLM call, regardless of how large
   the current catalogue gets. Within a confidence tier, offers are ranked by unit price
   ascending (cheapest, most comparable deal first).
+- `POST /meal-ideas/feedback` — Epic J3: a "Helpful"/"Not helpful" tap on one returned
+  meal idea, with an optional fixed set of reasons, stored alongside that idea's own
+  output (title, what it used, what it was missing, retrieved vs. generated) in a
+  `meal_idea_feedback` table (`rag/discounts_store.py`). `request_id` (echoed back in
+  every `/meal-ideas/from-cart` and `/meal-ideas/from-store` response) correlates a
+  feedback row back to that request's own Epic J1 log line. Fire-and-forget from the
+  app's side — never blocks or errors the user's flow.
+- `GET /admin/classification-quality` — Epic J2: read-only visibility into
+  classification quality — percentage of the current catalogue classified by the
+  keyword heuristic vs. the LLM tier vs. a manual override vs. left genuinely
+  uncertain, plus the products excluded and manually corrected most often
+  (`rag/classification_report.py`). No personal data, same no-auth posture as every
+  other route on this API.
 - `GET /health`
 
 `rag-service` exposes `POST /retrieve` and `GET /health`, reachable only from
@@ -223,3 +239,40 @@ predictable regardless of how permissive Tjek's API happens to be.
   rather than shown with full confidence (F7).
 - ✅ v2 reverse ingredient-sourcing (given a recipe/meal idea, find where to buy its
   ingredients) — end to end: precomputed index → API → mobile UI.
+- ✅ Epic G: one shared everyday-meal generation policy (`rag/ai_policy.py`) — system
+  prompt, three few-shot examples (a good output, an exclusion case, a
+  do-not-force-a-combination case), generation temperature lowered to 0.5 for the
+  cart/store fallback path, and response validation (every mentioned ingredient
+  actually came from the cart/store list, title and required ingredients aren't empty,
+  nothing is listed as both used and missing) — a generation that fails validation is
+  retried once under a stricter prompt, and the angle is simply dropped if the retry
+  also fails.
+- ✅ Epic H: satisfied by the design of every epic above rather than separate work —
+  `mobile-app/src/types/api.ts`/`types/cart.ts` already hand-mirror every backend
+  response shape (`DiscountedProduct`, `CartItem`, `MealIdea`, `IngredientOffer`,
+  `MealIdeasFromStoreResponse`, H1); `/query`, `/recipes/from-ingredients`, and
+  `/recipes/discounted` are untouched by any of Epic C-J's work, still returning the
+  original markdown-text `GeneratedRecipe` shape (H2); every meal-ideas/ingredient-offer
+  request already carried only ids/names, language, and a result cap, never a product
+  payload (H3, see each request model's own docstring).
+- ✅ Epic J: `POST /meal-ideas/from-cart` and `POST /meal-ideas/from-store` log one
+  structured `recommendation_event` per request (J1, `rag/observability.py`) —
+  what was selected/eligible/excluded, retrieval vs. generation, coverage, latency,
+  validation failures — with no personal data. `GET /admin/classification-quality`
+  (J2) and `POST /meal-ideas/feedback` (J3) are documented above.
+- ✅ Epic I: fixed, named regression scenarios locking in classification (I1,
+  `rag/tests/test_classification_curated_scenarios.py` — 10 eligible products, 10
+  ineligible, 9 explicitly-agreed ambiguous cases), cart behavior (I2, extended
+  `CartContext.test.tsx`/`CartScreen.test.tsx`), meal recommendations and store
+  suggestions (I3/I4, `rag/tests/test_meal_ideas_curated_scenarios.py`), and ingredient
+  sourcing (I5, extended `test_ingredient_index.py`/`test_pipeline_server.py`) — each
+  scenario is either a new named test or an explicit note pointing at the pre-existing
+  test that already covers it, so nothing is silently duplicated. Building the I1 suite
+  surfaced and fixed a real classifier gap: `BEVERAGE_KEYWORDS` now includes
+  "proteinshake" (verified against a live Tjek scan). A second gap (a microwave curry
+  ready-meal isn't excluded) was investigated and deliberately left unfixed — a bare
+  "curry" keyword would misclassify real current condiment offers ("CURRY KETCHUP",
+  "MANGO&CURRY") as ready meals — and is tracked as a named `KNOWN_GAP` test rather than
+  silently patched or silently ignored. I6 (an 80-item human-graded AI regression
+  dataset) is out of scope for automated implementation — it requires human grading
+  infrastructure this repo doesn't have.

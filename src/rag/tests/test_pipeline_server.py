@@ -12,6 +12,7 @@ module docstring and requirements-retrieval.txt vs. requirements-pipeline.txt fo
 same split this respects."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -473,6 +474,54 @@ def test_ingredient_offers_never_scans_or_reclassifies(monkeypatch):
     result = ingredient_offers(IngredientOffersRequest(ingredients=["lemon"]))
 
     assert result["ingredients"] == [{"ingredient": "lemon", "offers": []}]
+
+
+def test_ingredient_offers_covers_a_recipe_with_both_required_and_optional_ingredients(monkeypatch):
+    """Task I5 regression: a recipe's ingredient list sent to this route is a flat mix
+    of its required ingredients and its optional ones (see README's Meal Idea card "On
+    offer this week" section, Epic F5) -- the route itself has no concept of required
+    vs optional, so this proves the real match_ingredient_offers() (deliberately left
+    unmocked here, unlike the delegation test above) independently resolves each name
+    in one combined request: a required ingredient that's currently on offer alongside
+    an optional garnish that has no offer at all."""
+    index_rows = [
+        {
+            "normalized_ingredient_key": "chicken fillet",
+            "ingredient_aliases": json.dumps(["chicken fillet", "chicken fillets"]),
+            "original_product_name": "KYLLINGFILET",
+            "store_name": "Kiwi",
+            "current_price": 80.0,
+            "unit_price": 160.0,
+        },
+    ]
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: ([], "2026-07-16T05:00:00Z"))
+    monkeypatch.setattr(pipeline_server, "get_ingredient_index_rows", lambda db_path: index_rows)
+
+    result = ingredient_offers(IngredientOffersRequest(
+        ingredients=["chicken fillet", "lemon"],  # required ingredient, then an optional garnish
+    ))
+
+    required_entry, optional_entry = result["ingredients"]
+    assert required_entry["ingredient"] == "chicken fillet"
+    assert len(required_entry["offers"]) == 1
+    assert required_entry["offers"][0]["match_confidence"] == "exact"
+    assert optional_entry["ingredient"] == "lemon"
+    assert optional_entry["offers"] == []
+
+
+def test_ingredient_offers_reports_a_stale_snapshot_updated_at_without_fabricating_freshness(monkeypatch):
+    """Task I5 regression: snapshot_updated_at must faithfully mirror
+    get_latest_snapshot()'s own second return value even when it's old -- this route
+    computes nothing about freshness itself (no "now", no derived "stale" flag), so a
+    caller can never be shown a fabricated-fresh timestamp when the underlying daily
+    discount refresh has actually stalled."""
+    stale_snapshot_updated_at = "2026-05-01T05:00:00Z"  # far older than "today" -- a stalled cron refresh
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: ([], stale_snapshot_updated_at))
+    monkeypatch.setattr(pipeline_server, "get_ingredient_index_rows", lambda db_path: [])
+
+    result = ingredient_offers(IngredientOffersRequest(ingredients=["chicken fillet"]))
+
+    assert result["snapshot_updated_at"] == stale_snapshot_updated_at
 
 
 # ---------------------------------------------------------------------------

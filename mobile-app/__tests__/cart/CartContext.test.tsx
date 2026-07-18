@@ -42,6 +42,20 @@ const NON_FOOD_DEAL: DiscountedProduct = {
   recipe_eligible: false,
 };
 
+// Epic B4's disabled-selection rule isn't beverage-specific -- a ready meal is a
+// second, distinct food_usage_class that's also ineligible (it's already a finished
+// dish, not an ingredient to cook with), so this is a separate fixture from
+// INELIGIBLE_DEAL (a beverage) rather than reusing it.
+const READY_MEAL_DEAL: DiscountedProduct = {
+  ...ELIGIBLE_DEAL,
+  product_name: "Ferdigpizza",
+  category: "snack",
+  shopping_group: "food",
+  food_usage_class: "ready_meal",
+  meal_role: "not_applicable",
+  recipe_eligible: false,
+};
+
 function Probe() {
   const cart = useCart();
   return (
@@ -59,6 +73,9 @@ function Probe() {
       </TouchableOpacity>
       <TouchableOpacity testID="add-non-food" onPress={() => cart.addItem(NON_FOOD_DEAL)}>
         <Text>add non-food</Text>
+      </TouchableOpacity>
+      <TouchableOpacity testID="add-ready-meal" onPress={() => cart.addItem(READY_MEAL_DEAL)}>
+        <Text>add ready meal</Text>
       </TouchableOpacity>
       <TouchableOpacity testID="clear" onPress={cart.clearCart}>
         <Text>clear</Text>
@@ -174,6 +191,15 @@ describe("CartContext", () => {
     expect(screen.getByTestId(`selected-${ineligibleId}`).props.children).toBe("false");
   });
 
+  it("defaults a ready-meal item to not selected for meal ideas, same as a beverage (Epic B4)", async () => {
+    const user = userEvent.setup();
+    await renderProbe();
+
+    await user.press(screen.getByTestId("add-ready-meal"));
+
+    expect(screen.getByTestId("selected-Kiwi::Ferdigpizza").props.children).toBe("false");
+  });
+
   it("incrementQuantity increases an existing line's quantity", async () => {
     const user = userEvent.setup();
     await renderProbe();
@@ -227,6 +253,16 @@ describe("CartContext", () => {
     await user.press(screen.getByTestId("toggle-Kiwi::Coca-Cola"));
 
     expect(screen.getByTestId("selected-Kiwi::Coca-Cola").props.children).toBe("false");
+  });
+
+  it("toggleMealIdeaSelection has no effect on a ready-meal item -- disabled selection isn't beverage-specific (Epic B4)", async () => {
+    const user = userEvent.setup();
+    await renderProbe();
+    await user.press(screen.getByTestId("add-ready-meal"));
+
+    await user.press(screen.getByTestId("toggle-Kiwi::Ferdigpizza"));
+
+    expect(screen.getByTestId("selected-Kiwi::Ferdigpizza").props.children).toBe("false");
   });
 
   it("groups items into foodItems and nonFoodItems by shopping_group", async () => {
