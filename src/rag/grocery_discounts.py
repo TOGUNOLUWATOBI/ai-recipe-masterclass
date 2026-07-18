@@ -169,10 +169,14 @@ SNACK_KEYWORDS = [
 # not treats. juice/smoothie added after a live scan (2026-07-16) of all 822
 # current offers across the 11 stores below turned up "RÅ JUICE",
 # "NYPRESSET APPELSINJUICE" and 9 distinct "SMOOTHIE"/"FROOSH SMOOTHIE"-style
-# headings, all unambiguous beverages.
+# headings, all unambiguous beverages. "proteinshake" added after a live scan
+# (2026-07-18) turned up "TINE YT PROTEINSHAKE/ RESTITUSJONSDRIKK 6 PK" -- the
+# full compound word, not bare "protein", since that same scan also had
+# "PROTEINBAR"/"PROTEINBARER" (protein bars, a snack, not a drink) which a bare
+# "protein" keyword would have wrongly caught too.
 BEVERAGE_KEYWORDS = [
     "brus", "cola", "iste",
-    "juice", "smoothie",
+    "juice", "smoothie", "proteinshake",
 ]
 
 # Epic A food_usage_class="ready_meal": "a substantially complete meal intended

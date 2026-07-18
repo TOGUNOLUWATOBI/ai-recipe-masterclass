@@ -168,6 +168,26 @@ describe("CartScreen", () => {
     expect(screen.getByText("Not used for meal suggestions")).toBeTruthy();
   });
 
+  it("does not show a meal-idea toggle for a ready-meal item either -- Epic B4's disabled selection isn't beverage-specific", async () => {
+    const items = [
+      cartItem({
+        cart_item_id: "Kiwi::Ferdigpizza",
+        product_name: "Ferdigpizza",
+        food_usage_class: "ready_meal",
+        recipe_eligible: false,
+        selected_for_meal_ideas: false,
+      }),
+    ];
+    mockedGetDiscountedRecipes.mockResolvedValue(discountedResponseFor(items));
+    await seedCart(items);
+
+    await renderWithProviders(<CartScreen />);
+
+    await screen.findByText("Ferdigpizza");
+    expect(screen.queryByTestId("meal-idea-toggle")).toBeNull();
+    expect(screen.getByText("Not used for meal suggestions")).toBeTruthy();
+  });
+
   it("+ and - adjust an item's quantity", async () => {
     const items = [cartItem({})];
     mockedGetDiscountedRecipes.mockResolvedValue(discountedResponseFor(items));
