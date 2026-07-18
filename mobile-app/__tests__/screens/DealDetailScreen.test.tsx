@@ -38,20 +38,26 @@ describe("DealDetailScreen", () => {
     mockUseRoute.mockReturnValue({ params: { deal: DEAL } });
   });
 
-  it("requests exactly 1 recipe for the tapped product on initial load", async () => {
+  it("requests 3 recipes for the tapped product on initial load", async () => {
     mockedGetRecipes.mockResolvedValueOnce({
       ingredients: [DEAL.product_name],
       source: "generated",
-      count: 1,
-      recipes: [{ title: "Cheese Board", text: "...", rerank_score: null, dense_score: null }],
+      count: 3,
+      recipes: [
+        { title: "Cheese Board", text: "...", rerank_score: null, dense_score: null },
+        { title: "Grilled Cheese", text: "...", rerank_score: null, dense_score: null },
+        { title: "Cheese Fondue", text: "...", rerank_score: null, dense_score: null },
+      ],
       generated: "...",
       error: null,
     });
 
     await renderWithProviders(<DealDetailScreen />);
 
-    await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 1, true, "en"));
+    await waitFor(() => expect(mockedGetRecipes).toHaveBeenCalledWith([DEAL.product_name], 3, true, "en"));
     expect(await screen.findByText("Cheese Board")).toBeTruthy();
+    expect(screen.getByText("Grilled Cheese")).toBeTruthy();
+    expect(screen.getByText("Cheese Fondue")).toBeTruthy();
   });
 
   it("shows a 'Show more' button after the initial load and fetches more on tap", async () => {
