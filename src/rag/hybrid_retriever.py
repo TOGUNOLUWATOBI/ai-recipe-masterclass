@@ -46,6 +46,27 @@ class HybridRetriever:
 
         self.vocabulary = build_vocabulary(chunk["title"] for chunk in chunks)
 
+        # Dense retrieval identifies a chunk by its Qdrant point id (a uuid5 of
+        # source_file+chunk_id, see pipeline._point_id()); BM25 identifies the same
+        # chunk by its plain position in `chunks` (np.argsort() below returns array
+        # indices). Those are two different id spaces for the same underlying chunk --
+        # without translating one into the other before RRF fusion, a chunk retrieved
+        # by BOTH methods gets counted as two separate candidates (one dense hit under
+        # its Qdrant uuid, one BM25 hit under its chunks-index) instead of being merged
+        # into one, and the exact same recipe surfaces twice in the results (confirmed
+        # live: searching "sirloin" returned each of the top 3 corpus recipes twice,
+        # back to back). This map lets retrieve() re-key every dense hit to its
+        # chunks-index, the same id space BM25 already uses, so the two can actually be
+        # deduplicated. A deferred import -- pipeline.py only ever constructs this class
+        # lazily inside build_index() specifically so pipeline-service's container,
+        # which never calls build_index() and doesn't have rank_bm25/torch installed,
+        # never has to import this module at all; importing pipeline.py back from here
+        # at module load time would defeat that.
+        from .pipeline import _point_id
+        self._point_id_to_index = {
+            _point_id(chunk["source_file"], chunk["chunk_id"]): i for i, chunk in enumerate(chunks)
+        }
+
     def retrieve(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         k = top_k or self.top_k
         pool_size = max(k, self.RERANK_POOL_SIZE) if self.reranker else k
@@ -57,9 +78,21 @@ class HybridRetriever:
         query = normalized
 
         # --- Dense retrieval ---
+        # Re-keyed from Qdrant's own point id to this chunk's position in `self.chunks`
+        # (see the id-space comment in __init__) -- the same id space bm25_rank below
+        # uses, so a chunk hit by both methods fuses into one candidate instead of two.
+        # A Qdrant point with no matching in-memory chunk (a stale index entry) is
+        # skipped rather than crashing -- it can't be deduplicated against anyway.
         query_emb = self.embedder.embed_query(query)
         dense_results = self.vector_db.retrieve(query_emb, top_k=n_candidates)
-        dense_rank = {r["id"]: rank for rank, r in enumerate(dense_results)}
+        dense_rank = {}
+        dense_by_index = {}
+        for rank, r in enumerate(dense_results):
+            idx = self._point_id_to_index.get(r["id"])
+            if idx is None:
+                continue
+            dense_rank[idx] = rank
+            dense_by_index[idx] = r
 
         # --- BM25 retrieval ---
         bm25_scores = self.bm25.get_scores(_tokenize(query))
@@ -76,14 +109,14 @@ class HybridRetriever:
 
         top_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)[:pool_size]
 
-        dense_by_id = {r["id"]: r for r in dense_results}
         results = []
         for doc_id in top_ids:
-            if doc_id in dense_by_id:
+            if doc_id in dense_by_index:
+                r = dense_by_index[doc_id]
                 entry = {
-                    **dense_by_id[doc_id],
+                    **r,
                     "score": rrf_scores[doc_id],
-                    "dense_score": dense_by_id[doc_id]["score"],
+                    "dense_score": r["score"],
                 }
             else:
                 chunk = self.chunks[doc_id]
