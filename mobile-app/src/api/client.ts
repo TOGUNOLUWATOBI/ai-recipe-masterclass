@@ -5,6 +5,7 @@ import type {
   GeneratedRecipe,
   IngredientOffersResponse,
   IngredientsResponse,
+  MealIdeaFeedbackReason,
   MealIdeasFromCartResponse,
   MealIdeasFromStoreResponse,
   QueryResponse,
@@ -162,6 +163,45 @@ export async function getMealIdeasFromStore(
     throw new ApiError("invalid_response", "Meal ideas response was missing expected fields");
   }
   return data;
+}
+
+// Epic J3: fire-and-forget feedback on one returned meal idea. Deliberately does not
+// throw on failure -- a dropped feedback submission must never surface an error to a
+// home cook who already got their meal ideas and is just tapping a rating on the way
+// out; see MealIdeaResultsScreen.tsx's call site for how the UI reflects this (the
+// Helpful/Not-helpful state flips immediately, optimistically, regardless of whether
+// the request actually lands).
+export async function submitMealIdeaFeedback(
+  requestId: string,
+  recommendationType: "cart" | "store",
+  ideaTitle: string | null,
+  helpful: boolean,
+  reasons: MealIdeaFeedbackReason[] = [],
+  selectedItemsUsed: string[] = [],
+  missingRequiredIngredients: string[] = [],
+  sourceType: "retrieved" | "generated" | null = null
+): Promise<void> {
+  try {
+    await fetchJson(
+      "/meal-ideas/feedback",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          request_id: requestId,
+          recommendation_type: recommendationType,
+          idea_title: ideaTitle,
+          helpful,
+          reasons,
+          selected_items_used: selectedItemsUsed,
+          missing_required_ingredients: missingRequiredIngredients,
+          source_type: sourceType,
+        }),
+      },
+      DEFAULT_TIMEOUT_MS
+    );
+  } catch {
+    // Best-effort only -- see the function comment above.
+  }
 }
 
 // Epic F5: a fast precomputed-index lookup, never a live scan or LLM call (Task F3) --

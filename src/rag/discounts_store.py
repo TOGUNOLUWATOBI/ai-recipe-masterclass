@@ -25,6 +25,7 @@ since every row in it gets naturally re-derived (heuristic first, LLM second) th
 next time that product name shows up in a scan.
 """
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -86,6 +87,17 @@ CREATE TABLE IF NOT EXISTS discount_ingredient_index (
     updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ingredient_index_key ON discount_ingredient_index(normalized_ingredient_key);
+CREATE TABLE IF NOT EXISTS meal_idea_feedback (
+    request_id TEXT NOT NULL,
+    recommendation_type TEXT NOT NULL,
+    idea_title TEXT,
+    helpful INTEGER NOT NULL,
+    reasons TEXT,
+    selected_items_used TEXT,
+    missing_required_ingredients TEXT,
+    source_type TEXT,
+    submitted_at TEXT NOT NULL
+);
 """
 
 # Epic F1's discount_ingredient_index columns, in insert/select order.
@@ -270,6 +282,28 @@ def get_cached_classifications(
     }
 
 
+def get_classification_sources(
+    db_path: str, product_names: List[str], conn: Optional[sqlite3.Connection] = None,
+) -> Dict[str, str]:
+    """Epic J2: product_name -> classification_source ("llm" / "manual_override") for
+    whichever of the given names have a cached row -- a name absent from the returned
+    dict was never cached at all, meaning it was classified by the inline keyword
+    heuristic alone (see refresh_discounts.py's step 2, which never writes to
+    product_classifications since there's nothing worth caching for a cheap
+    deterministic rule). classification_report.py relies on that absence to mean
+    "heuristic" rather than querying for it directly."""
+    if not product_names:
+        return {}
+    with _connect(db_path, conn) as c:
+        placeholders = ", ".join("?" for _ in product_names)
+        rows = c.execute(
+            f"""SELECT product_name, classification_source
+                FROM product_classifications WHERE product_name IN ({placeholders})""",
+            product_names,
+        ).fetchall()
+    return {row["product_name"]: row["classification_source"] for row in rows}
+
+
 def save_classifications(
     db_path: str,
     classifications: Dict[str, ProductClassification],
@@ -373,3 +407,40 @@ def get_ingredient_index_rows(db_path: str, conn: Optional[sqlite3.Connection] =
         # boolean context (e.g. `offer["recipe_eligible"] is True`).
         item["recipe_eligible"] = bool(item["recipe_eligible"])
     return results
+
+
+def save_meal_idea_feedback(
+    db_path: str,
+    *,
+    request_id: str,
+    recommendation_type: str,
+    idea_title: Optional[str],
+    helpful: bool,
+    reasons: List[str],
+    selected_items_used: List[str],
+    missing_required_ingredients: List[str],
+    source_type: Optional[str],
+    submitted_at: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Epic J3: one row per "Helpful"/"Not helpful" tap, storing the feedback alongside
+    the specific idea's own output (title, what it used, what it was missing, whether
+    it was retrieved or generated) -- never re-fetched or joined against a separate
+    events store, so a feedback row stays meaningful even after the log line that
+    originally reported this request has rotated out of whatever log retention this
+    deployment has. `request_id` still lets it be correlated back to that original
+    Epic J1 log line (recommendation_type/selected/eligible/excluded product ids,
+    latency, etc.) when deeper debugging is needed. Never a hard failure path -- there's
+    nothing here worth blocking the user's cart/meal-idea flow over."""
+    with _connect(db_path, conn) as c:
+        c.execute(
+            """INSERT INTO meal_idea_feedback
+                (request_id, recommendation_type, idea_title, helpful, reasons,
+                 selected_items_used, missing_required_ingredients, source_type, submitted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                request_id, recommendation_type, idea_title, int(helpful), json.dumps(reasons),
+                json.dumps(selected_items_used), json.dumps(missing_required_ingredients),
+                source_type, submitted_at,
+            ),
+        )

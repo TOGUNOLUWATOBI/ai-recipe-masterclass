@@ -38,18 +38,24 @@ Pipeline (mirrors Task C1-C8 in order):
 
 estimated_complexity and servings are always null -- neither the corpus nor generation
 currently produces that data; a real signal for either is future work, not something
-this module fabricates. Epic G (the shared, cross-endpoint AI behavior policy with
-few-shot examples and full response validation) is also a separate, later epic -- the
-system prompt and temperature below are this endpoint's own minimal, working version of
-that policy (now folding in Task D4's tone rules too), expected to be refactored into
-Epic G's shared module once it lands.
+this module fabricates. Epic G's shared everyday-meal policy (system prompt, few-shot
+examples, temperature, response validation) lives in ai_policy.py and is applied by
+_generate_fallback_ideas() below.
+
+Epic J1: both entry points log one structured recommendation_event (see
+observability.py) after the pipeline finishes -- request tracing/quality
+monitoring, never anything a client needs to see, so it's a side effect around the
+edges of each entry point rather than something threaded through the return value.
 """
 
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from .ai_policy import GENERATION_TEMPERATURE, build_meal_ideas_system_prompt, validate_generated_idea
 from .grocery_terms import normalize_grocery_heading
+from .observability import log_recommendation_event, new_request_id
 from .pipeline import RecipeRAGPipeline, _parse_recipe_sections
 from .recipe_structuring import structure_ingredients
 
@@ -264,22 +270,6 @@ def _build_idea_from_corpus_result(
     }
 
 
-# Epic G's shared, tested everyday-meal policy (few-shot examples, response
-# validation, tuned temperature) doesn't exist yet -- this is this endpoint's own
-# minimal working version of that policy (see module docstring), covering just what
-# Task C2/C5/C6 need: use only what's listed, never force every ingredient into one
-# dish, keep it ordinary rather than restaurant-style.
-_MEAL_IDEAS_SYSTEM_PROMPT = """You are an everyday home-cooking assistant helping someone plan a meal from groceries they already have.
-
-STRICT RULES:
-1. Suggest a practical, familiar meal an ordinary home cook would actually make -- never a restaurant-style, deconstructed, or unusually creative dish.
-2. You do not have to use every ingredient listed -- use whichever subset makes one sensible, coherent meal, and ignore the rest.
-3. Never invent an ingredient that isn't listed and isn't a basic pantry staple (salt, water, cooking oil, pepper).
-4. Present the ingredients you actually use as a simple, clean bulleted list, and the steps as a numbered list.
-5. Keep instructions short and plain: about 4 to 8 steps, ordinary short sentences, no professional culinary terms, no plating direction, and never describe the dish as "gourmet", "elevated", or "restaurant-quality".
-6. Use only standard, plain English text. Never use R-programming syntax (like c(), quotes, or brackets around lists).
-7. Do not include conversational filler."""
-
 # Three distinct angles for three separate calls -- asking one call for "3 meal ideas"
 # doesn't work (confirmed empirically elsewhere in this codebase, see
 # pipeline.find_recipes_or_generate(): the fine-tuned model always returns exactly one
@@ -309,61 +299,86 @@ def _split_generated_ingredient_lines(ingredients_block: str) -> List[str]:
     return lines
 
 
+def _generate_one_idea(
+    pipeline: RecipeRAGPipeline, prompt: str, normalized_cart_names: List[str], strict_retry: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """One generation attempt -> parse -> compute coverage -> validate (Task G4).
+    Returns None on any failure (a raised exception, an unparseable response, zero
+    ingredient overlap with the cart, or a validation failure) so the caller can decide
+    whether to retry or give up -- never partially-built or unvalidated data."""
+    try:
+        answer = pipeline.generator.generate(
+            prompt, "(no matching reference recipe found)", build_meal_ideas_system_prompt(strict_retry=strict_retry),
+            options={"temperature": GENERATION_TEMPERATURE},
+        )
+    except Exception as e:
+        logger.error(f"Meal-idea generation failed: {e}")
+        return None
+
+    sections = _parse_recipe_sections(answer)
+    ingredients_block = sections.get("ingredients")
+    if not ingredients_block:
+        return None
+    raw_ingredients = _split_generated_ingredient_lines(ingredients_block)
+    structured = structure_ingredients(raw_ingredients)
+    required = structured["required_ingredients"]
+    optional = structured["optional_ingredients"]
+
+    required_names = [ing["name"] for ing in required]
+    coverage = compute_coverage(required_names, normalized_cart_names)
+    if not coverage["matched_cart_names"]:
+        return None
+
+    missing = coverage["missing_required_ingredients"]
+    idea = {
+        "title": sections.get("title"),
+        "description": None,
+        "servings": None,
+        "completion_status": completion_status(len(required), len(missing)),
+        "selected_items_used": coverage["matched_cart_names"],
+        "required_ingredients": required,
+        "optional_ingredients": optional,
+        "missing_required_ingredients": missing,
+        "ingredient_coverage_percentage": coverage["ingredient_coverage_percentage"],
+        "pantry_basics_assumed": structured["pantry_basics_assumed"],
+        "estimated_complexity": None,
+        "source_type": "generated",
+    }
+    if not validate_generated_idea(idea, normalized_cart_names):
+        return None
+    return idea
+
+
 def _generate_fallback_ideas(
     pipeline: RecipeRAGPipeline, normalized_cart_names: List[str], max_results: int
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], bool]:
     """Task C3's fallback path -- only reached when retrieval returns nothing usable.
     Mirrors find_recipes_or_generate()'s "one angle per call" mechanism (see that
     function's own comment for why: OpenWebUI silently pins temperature, native Ollama
-    doesn't) but with a meal-ideas-specific system prompt/temperature (Task G3's
-    spirit: lower variance than the general multi-recipe-suggestion flow, since the
-    goal here is a sensible everyday meal, not maximally diverse options)."""
+    doesn't) but with the shared meal-ideas policy from ai_policy.py (Epic G).
+
+    Task G4: a generation that fails validation is retried once under a stricter
+    prompt; if that also fails, the angle is simply skipped (a safe fallback -- never
+    return something malformed as if it were a valid idea).
+
+    Returns (ideas, validation_failure) -- the second element is Epic J1's
+    validation_failure signal: True if any angle's first attempt needed the stricter
+    retry, regardless of whether that retry then succeeded."""
     ingredients_str = ", ".join(normalized_cart_names)
     n = min(max_results, len(_GENERATION_ANGLES))
     ideas: List[Dict[str, Any]] = []
+    validation_failure = False
 
     for i in range(n):
         prompt = _GENERATION_ANGLES[i].format(ing=ingredients_str)
-        try:
-            answer = pipeline.generator.generate(
-                prompt, "(no matching reference recipe found)", _MEAL_IDEAS_SYSTEM_PROMPT,
-                options={"temperature": 0.5},
-            )
-        except Exception as e:
-            logger.error(f"Meal-idea generation angle {i + 1}/{n} failed: {e}")
-            continue
+        idea = _generate_one_idea(pipeline, prompt, normalized_cart_names)
+        if idea is None:
+            validation_failure = True
+            idea = _generate_one_idea(pipeline, prompt, normalized_cart_names, strict_retry=True)
+        if idea is not None:
+            ideas.append(idea)
 
-        sections = _parse_recipe_sections(answer)
-        ingredients_block = sections.get("ingredients")
-        if not ingredients_block:
-            continue
-        raw_ingredients = _split_generated_ingredient_lines(ingredients_block)
-        structured = structure_ingredients(raw_ingredients)
-        required = structured["required_ingredients"]
-        optional = structured["optional_ingredients"]
-
-        required_names = [ing["name"] for ing in required]
-        coverage = compute_coverage(required_names, normalized_cart_names)
-        if not coverage["matched_cart_names"]:
-            continue
-
-        missing = coverage["missing_required_ingredients"]
-        ideas.append({
-            "title": sections.get("title"),
-            "description": None,
-            "servings": None,
-            "completion_status": completion_status(len(required), len(missing)),
-            "selected_items_used": coverage["matched_cart_names"],
-            "required_ingredients": required,
-            "optional_ingredients": optional,
-            "missing_required_ingredients": missing,
-            "ingredient_coverage_percentage": coverage["ingredient_coverage_percentage"],
-            "pantry_basics_assumed": structured["pantry_basics_assumed"],
-            "estimated_complexity": None,
-            "source_type": "generated",
-        })
-
-    return ideas
+    return ideas, validation_failure
 
 
 def _generate_ideas_from_eligible_rows(
@@ -377,7 +392,12 @@ def _generate_ideas_from_eligible_rows(
     if retrieval finds nothing usable -> rank -> cap at max_results. Callers own
     resolving their own source (cart item ids vs. one store's offers) and attach their
     own excluded-items field to the result -- this only ever sees what already passed
-    eligibility."""
+    eligibility.
+
+    The returned dict also carries two internal-only keys, `_retrieved_candidate_count`
+    and `_validation_failure` (Epic J1's log fields, underscore-prefixed since neither
+    is part of Task C7's documented response shape) -- callers below must pop() both
+    before returning the result to an HTTP caller."""
     # A request body's max_results can be an explicit JSON `null`, not just an omitted
     # field -- Pydantic's `Optional[int] = 5` only applies that default when the key is
     # missing entirely, so None can and does reach here otherwise. Left unguarded,
@@ -389,7 +409,7 @@ def _generate_ideas_from_eligible_rows(
     # Task C8: zero eligible ingredients -- never call retrieval/generation with an
     # empty query, just report nothing to suggest.
     if not eligible_rows:
-        return {"ideas": [], "source": None}
+        return {"ideas": [], "source": None, "_retrieved_candidate_count": 0, "_validation_failure": False}
 
     name_pairs = normalize_and_dedupe(eligible_rows)
     normalized_names = [normalized for _, normalized in name_pairs]
@@ -405,10 +425,11 @@ def _generate_ideas_from_eligible_rows(
             ideas.append(idea)
 
     source_type = "retrieved"
+    validation_failure = False
     if not ideas:
         # Task C3: generation is the fallback, only reached when retrieval produced
         # nothing usable.
-        ideas = _generate_fallback_ideas(pipeline, normalized_names, max_results)
+        ideas, validation_failure = _generate_fallback_ideas(pipeline, normalized_names, max_results)
         source_type = "generated"
 
     ideas.sort(key=_rank_key)
@@ -418,7 +439,20 @@ def _generate_ideas_from_eligible_rows(
         # for the app/logs to know which branch produced these ideas without having to
         # inspect every individual idea's own source_type.
         "source": source_type if ideas else None,
+        "_retrieved_candidate_count": len(grounded),
+        "_validation_failure": validation_failure,
     }
+
+
+def _top_idea_coverage(ideas: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[int]]:
+    """Epic J1's ingredient_coverage/missing_ingredient_count fields summarize the
+    whole request with the top-ranked idea (ideas[0], already the best-ranked by
+    _rank_key) as the representative result -- logging every returned idea's coverage
+    separately would be a list-of-lists per event for no real benefit at this stage."""
+    if not ideas:
+        return None, None
+    top = ideas[0]
+    return top["ingredient_coverage_percentage"], len(top["missing_required_ingredients"])
 
 
 def generate_meal_ideas_from_cart(
@@ -427,18 +461,47 @@ def generate_meal_ideas_from_cart(
     discount_item_ids: List[str],
     max_results: int = 5,
     language: str = "en",
+    discount_snapshot_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Orchestrates the full Task C1-C8 pipeline -- see module docstring for the
     numbered steps. `language` is accepted for API-shape consistency with the rest of
     pipeline_server.py's endpoints but not yet applied here -- meal ideas aren't
     translated to Norwegian in this first version (Epic C's own acceptance criteria
     don't require it); wiring it through translator.py the same way
-    find_recipes_or_generate() does is straightforward follow-up work once needed."""
+    find_recipes_or_generate() does is straightforward follow-up work once needed.
+    `discount_snapshot_id` is passed through only for Epic J1's log event -- pipeline_
+    server.py is the only thing that knows which cached snapshot it fetched. The
+    response's own `request_id` (Epic J3) lets the app attach later "Helpful"/"Not
+    helpful" feedback to the exact request that produced these ideas, without the app
+    having to resend the full recommendation inputs/outputs itself."""
+    started_at = time.perf_counter()
+    request_id = new_request_id()
     resolved_rows, not_found = resolve_cart_items(discount_item_ids, discounts)
     eligible_rows, ineligible = filter_eligible_items(resolved_rows)
 
     result = _generate_ideas_from_eligible_rows(pipeline, eligible_rows, max_results)
-    result["excluded_cart_items"] = not_found + ineligible
+    retrieved_candidate_count = result.pop("_retrieved_candidate_count")
+    validation_failure = result.pop("_validation_failure")
+    excluded = not_found + ineligible
+    result["excluded_cart_items"] = excluded
+    result["request_id"] = request_id
+
+    coverage, missing_count = _top_idea_coverage(result["ideas"])
+    log_recommendation_event(
+        request_id=request_id,
+        recommendation_type="cart",
+        selected_product_ids=list(discount_item_ids),
+        eligible_product_ids=[row.get("product_name") for row in eligible_rows],
+        excluded_product_ids=[item.get("product_name") for item in excluded],
+        retrieved_candidate_count=retrieved_candidate_count,
+        generated_fallback_used=result["source"] == "generated",
+        meal_ideas_returned=len(result["ideas"]),
+        ingredient_coverage=coverage,
+        missing_ingredient_count=missing_count,
+        discount_snapshot_id=discount_snapshot_id,
+        latency_seconds=time.perf_counter() - started_at,
+        validation_failure=validation_failure,
+    )
     return result
 
 
@@ -448,17 +511,42 @@ def generate_meal_ideas_from_store(
     store_name: str,
     max_results: int = 5,
     language: str = "en",
+    discount_snapshot_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Epic E (Task E2/E4): same corpus-first/generation-fallback pipeline as the cart
     flow above, sourced from one store's current cached offers instead of the user's
     cart -- never triggers a new Tjek scan, reclassification, or discount re-analysis
     (resolve_store_items() only filters the already-cached snapshot). `language` is
     accepted for the same API-shape-consistency reason as the cart flow above and
-    likewise not yet applied."""
+    likewise not yet applied. `discount_snapshot_id` is Epic J1's log field, same as
+    the cart flow above. The response's own `request_id` (Epic J3) is the same
+    feedback-correlation mechanism as the cart flow above."""
+    started_at = time.perf_counter()
+    request_id = new_request_id()
     store_rows = resolve_store_items(store_name, discounts)
     eligible_rows, ineligible = filter_eligible_items(store_rows)
 
     result = _generate_ideas_from_eligible_rows(pipeline, eligible_rows, max_results)
+    retrieved_candidate_count = result.pop("_retrieved_candidate_count")
+    validation_failure = result.pop("_validation_failure")
     result["excluded_store_items"] = ineligible
     result["store_name"] = store_name
+    result["request_id"] = request_id
+
+    coverage, missing_count = _top_idea_coverage(result["ideas"])
+    log_recommendation_event(
+        request_id=request_id,
+        recommendation_type="store",
+        selected_product_ids=[row.get("product_name") for row in store_rows],
+        eligible_product_ids=[row.get("product_name") for row in eligible_rows],
+        excluded_product_ids=[item.get("product_name") for item in ineligible],
+        retrieved_candidate_count=retrieved_candidate_count,
+        generated_fallback_used=result["source"] == "generated",
+        meal_ideas_returned=len(result["ideas"]),
+        ingredient_coverage=coverage,
+        missing_ingredient_count=missing_count,
+        discount_snapshot_id=discount_snapshot_id,
+        latency_seconds=time.perf_counter() - started_at,
+        validation_failure=validation_failure,
+    )
     return result

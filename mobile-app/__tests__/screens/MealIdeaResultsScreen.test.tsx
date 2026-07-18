@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { screen, userEvent } from "@testing-library/react-native";
 import React from "react";
 import { Text, TouchableOpacity } from "react-native";
-import { getIngredientOffers, getMealIdeasFromCart, getMealIdeasFromStore } from "../../src/api/client";
+import { getIngredientOffers, getMealIdeasFromCart, getMealIdeasFromStore, submitMealIdeaFeedback } from "../../src/api/client";
 import { useCart } from "../../src/cart/CartContext";
 import { MealIdeaResultsScreen } from "../../src/screens/MealIdeaResultsScreen";
 import type { IngredientOffer, MealIdea } from "../../src/types/api";
@@ -13,6 +13,7 @@ jest.mock("../../src/api/client");
 const mockedGetMealIdeasFromCart = getMealIdeasFromCart as jest.MockedFunction<typeof getMealIdeasFromCart>;
 const mockedGetMealIdeasFromStore = getMealIdeasFromStore as jest.MockedFunction<typeof getMealIdeasFromStore>;
 const mockedGetIngredientOffers = getIngredientOffers as jest.MockedFunction<typeof getIngredientOffers>;
+const mockedSubmitMealIdeaFeedback = submitMealIdeaFeedback as jest.MockedFunction<typeof submitMealIdeaFeedback>;
 
 let mockRouteParams: { source: "cart" } | { source: "store"; storeName: string } = { source: "cart" };
 jest.mock("@react-navigation/native", () => {
@@ -95,6 +96,8 @@ describe("MealIdeaResultsScreen", () => {
     mockedGetMealIdeasFromStore.mockReset();
     mockedGetIngredientOffers.mockReset();
     mockedGetIngredientOffers.mockResolvedValue({ snapshot_updated_at: null, ingredients: [] });
+    mockedSubmitMealIdeaFeedback.mockReset();
+    mockedSubmitMealIdeaFeedback.mockResolvedValue(undefined);
     mockRouteParams = { source: "cart" };
   });
 
@@ -120,7 +123,7 @@ describe("MealIdeaResultsScreen", () => {
         }),
       ])
     );
-    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
 
@@ -130,7 +133,7 @@ describe("MealIdeaResultsScreen", () => {
 
   it("cart source: a fetched-but-empty result shows the generic no-ideas message, not the select-an-ingredient prompt", async () => {
     await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
-    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [], excluded_cart_items: [], source: null });
+    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [], excluded_cart_items: [], request_id: "req-test", source: null });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
 
@@ -142,7 +145,7 @@ describe("MealIdeaResultsScreen", () => {
     mockedGetMealIdeasFromCart.mockResolvedValue({
       ideas: [idea({ missing_required_ingredients: ["rice"] })],
       excluded_cart_items: [],
-      source: "retrieved",
+      request_id: "req-test", source: "retrieved",
     });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
@@ -153,7 +156,7 @@ describe("MealIdeaResultsScreen", () => {
   it("store source: requests ideas for the picked store and shows the store heading", async () => {
     mockRouteParams = { source: "store", storeName: "Kiwi" };
     mockedGetMealIdeasFromStore.mockResolvedValue({
-      ideas: [idea({})], excluded_store_items: [], store_name: "Kiwi", source: "retrieved",
+      ideas: [idea({})], excluded_store_items: [], store_name: "Kiwi", request_id: "req-test", source: "retrieved",
     });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
@@ -168,7 +171,7 @@ describe("MealIdeaResultsScreen", () => {
       ideas: [idea({ missing_required_ingredients: ["lemon"] })],
       excluded_store_items: [],
       store_name: "Kiwi",
-      source: "retrieved",
+      request_id: "req-test", source: "retrieved",
     });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
@@ -179,7 +182,7 @@ describe("MealIdeaResultsScreen", () => {
 
   it("store source: an empty result shows the store-specific empty state", async () => {
     mockRouteParams = { source: "store", storeName: "Kiwi" };
-    mockedGetMealIdeasFromStore.mockResolvedValue({ ideas: [], excluded_store_items: [], store_name: "Kiwi", source: null });
+    mockedGetMealIdeasFromStore.mockResolvedValue({ ideas: [], excluded_store_items: [], store_name: "Kiwi", request_id: "req-test", source: null });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
 
@@ -196,7 +199,7 @@ describe("MealIdeaResultsScreen", () => {
         }),
       ],
       excluded_cart_items: [],
-      source: "retrieved",
+      request_id: "req-test", source: "retrieved",
     });
 
     await renderWithProviders(<MealIdeaResultsScreen />);
@@ -234,7 +237,7 @@ describe("MealIdeaResultsScreen", () => {
         }),
       ])
     );
-    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
     const user = userEvent.setup();
 
     await renderWithProviders(
@@ -273,7 +276,7 @@ describe("MealIdeaResultsScreen", () => {
         }),
       ])
     );
-    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+    mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
     const user = userEvent.setup();
 
     await renderWithProviders(
@@ -310,7 +313,7 @@ describe("MealIdeaResultsScreen", () => {
           }),
         ],
         excluded_cart_items: [],
-        source: "retrieved",
+        request_id: "req-test", source: "retrieved",
       });
 
       await renderWithProviders(<MealIdeaResultsScreen />);
@@ -322,7 +325,7 @@ describe("MealIdeaResultsScreen", () => {
 
     it("shows the matched offer's product name, store, and price", async () => {
       await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
-      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
       mockedGetIngredientOffers.mockResolvedValue({
         snapshot_updated_at: "2026-07-16T05:00:00Z",
         ingredients: [{ ingredient: "chicken fillet", offers: [offer({})] }],
@@ -337,7 +340,7 @@ describe("MealIdeaResultsScreen", () => {
 
     it("shows 'No current offer found' when nothing matches -- never 'unavailable'", async () => {
       await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
-      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
       mockedGetIngredientOffers.mockResolvedValue({
         snapshot_updated_at: "2026-07-16T05:00:00Z",
         ingredients: [{ ingredient: "chicken fillet", offers: [] }],
@@ -351,7 +354,7 @@ describe("MealIdeaResultsScreen", () => {
 
     it("labels a fuzzy match as a possible match rather than presenting it as confirmed", async () => {
       await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
-      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
       mockedGetIngredientOffers.mockResolvedValue({
         snapshot_updated_at: "2026-07-16T05:00:00Z",
         ingredients: [{ ingredient: "chicken fillet", offers: [offer({ match_confidence: "fuzzy" })] }],
@@ -364,7 +367,7 @@ describe("MealIdeaResultsScreen", () => {
 
     it("shows only the top offer initially, expanding to the rest via 'view more'", async () => {
       await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
-      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
       mockedGetIngredientOffers.mockResolvedValue({
         snapshot_updated_at: "2026-07-16T05:00:00Z",
         ingredients: [{
@@ -392,13 +395,103 @@ describe("MealIdeaResultsScreen", () => {
 
     it("a failed offers lookup does not break the meal ideas themselves", async () => {
       await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
-      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], source: "retrieved" });
+      mockedGetMealIdeasFromCart.mockResolvedValue({ ideas: [idea({})], excluded_cart_items: [], request_id: "req-test", source: "retrieved" });
       mockedGetIngredientOffers.mockRejectedValue(new Error("network down"));
 
       await renderWithProviders(<MealIdeaResultsScreen />);
 
       expect(await screen.findByText("Chicken and Rice")).toBeTruthy();
       expect(await screen.findByTestId("no-offer-found")).toBeTruthy();
+    });
+  });
+
+  describe("Epic J3: meal idea feedback", () => {
+    it("tapping 'Helpful' immediately submits feedback and shows a thank-you message", async () => {
+      await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
+      mockedGetMealIdeasFromCart.mockResolvedValue({
+        ideas: [idea({})], excluded_cart_items: [], request_id: "req-abc", source: "retrieved",
+      });
+      const user = userEvent.setup();
+
+      await renderWithProviders(<MealIdeaResultsScreen />);
+      await user.press(await screen.findByTestId("meal-idea-feedback-helpful"));
+
+      expect(await screen.findByTestId("meal-idea-feedback-thanks")).toBeTruthy();
+      expect(mockedSubmitMealIdeaFeedback).toHaveBeenCalledWith(
+        "req-abc", "cart", "Chicken and Rice", true, [], ["chicken fillet"], [], "retrieved"
+      );
+    });
+
+    it("tapping 'Not helpful' reveals reason chips instead of submitting immediately", async () => {
+      await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
+      mockedGetMealIdeasFromCart.mockResolvedValue({
+        ideas: [idea({})], excluded_cart_items: [], request_id: "req-abc", source: "retrieved",
+      });
+      const user = userEvent.setup();
+
+      await renderWithProviders(<MealIdeaResultsScreen />);
+      await user.press(await screen.findByTestId("meal-idea-feedback-not-helpful"));
+
+      expect(await screen.findByTestId("meal-idea-feedback-reasons")).toBeTruthy();
+      expect(screen.queryByTestId("meal-idea-feedback-thanks")).toBeNull();
+      expect(mockedSubmitMealIdeaFeedback).not.toHaveBeenCalled();
+    });
+
+    it("selecting reasons and sending feedback submits helpful=false with the chosen reasons", async () => {
+      await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
+      mockedGetMealIdeasFromCart.mockResolvedValue({
+        ideas: [idea({ missing_required_ingredients: ["rice"] })],
+        excluded_cart_items: [],
+        request_id: "req-abc",
+        source: "retrieved",
+      });
+      const user = userEvent.setup();
+
+      await renderWithProviders(<MealIdeaResultsScreen />);
+      await user.press(await screen.findByTestId("meal-idea-feedback-not-helpful"));
+      await user.press(await screen.findByTestId("meal-idea-feedback-reason-too_complicated"));
+      await user.press(screen.getByTestId("meal-idea-feedback-reason-incorrect_product"));
+      await user.press(screen.getByTestId("meal-idea-feedback-submit"));
+
+      expect(await screen.findByTestId("meal-idea-feedback-thanks")).toBeTruthy();
+      expect(mockedSubmitMealIdeaFeedback).toHaveBeenCalledTimes(1);
+      expect(mockedSubmitMealIdeaFeedback).toHaveBeenCalledWith(
+        "req-abc", "cart", "Chicken and Rice", false,
+        ["too_complicated", "incorrect_product"], ["chicken fillet"], ["rice"], "retrieved"
+      );
+    });
+
+    it("tapping a reason chip twice deselects it before sending", async () => {
+      await AsyncStorage.setItem("cart", JSON.stringify([cartItem({})]));
+      mockedGetMealIdeasFromCart.mockResolvedValue({
+        ideas: [idea({})], excluded_cart_items: [], request_id: "req-abc", source: "retrieved",
+      });
+      const user = userEvent.setup();
+
+      await renderWithProviders(<MealIdeaResultsScreen />);
+      await user.press(await screen.findByTestId("meal-idea-feedback-not-helpful"));
+      await user.press(await screen.findByTestId("meal-idea-feedback-reason-too_complicated"));
+      await user.press(screen.getByTestId("meal-idea-feedback-reason-too_complicated"));
+      await user.press(screen.getByTestId("meal-idea-feedback-submit"));
+
+      expect(mockedSubmitMealIdeaFeedback).toHaveBeenCalledWith(
+        "req-abc", "cart", "Chicken and Rice", false, [], ["chicken fillet"], [], "retrieved"
+      );
+    });
+
+    it("passes the store recommendation_type through for a store-sourced idea", async () => {
+      mockRouteParams = { source: "store", storeName: "Kiwi" };
+      mockedGetMealIdeasFromStore.mockResolvedValue({
+        ideas: [idea({})], excluded_store_items: [], store_name: "Kiwi", request_id: "req-store", source: "retrieved",
+      });
+      const user = userEvent.setup();
+
+      await renderWithProviders(<MealIdeaResultsScreen />);
+      await user.press(await screen.findByTestId("meal-idea-feedback-helpful"));
+
+      expect(mockedSubmitMealIdeaFeedback).toHaveBeenCalledWith(
+        "req-store", "store", "Chicken and Rice", true, [], ["chicken fillet"], [], "retrieved"
+      );
     });
   });
 });

@@ -12,15 +12,22 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from .classification_report import build_classification_quality_report
 from .config import RecipeRAGConfig
-from .discounts_store import get_ingredient_index_rows, get_latest_snapshot
+from .discounts_store import (
+    get_classification_sources,
+    get_ingredient_index_rows,
+    get_latest_snapshot,
+    save_meal_idea_feedback,
+)
 from .ingredient_index import match_ingredient_offers
 from .meal_ideas import generate_meal_ideas_from_cart, generate_meal_ideas_from_store
 from .pipeline import RecipeRAGPipeline
@@ -213,9 +220,10 @@ def meal_ideas_from_cart(req: MealIdeasFromCartRequest):
     whatever classification the client might send, only the id itself (see
     meal_ideas.generate_meal_ideas_from_cart() for the full pipeline: resolve -> filter
     -> normalize -> retrieve-or-generate -> score coverage -> rank)."""
-    discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    discounts, scanned_at = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
     return generate_meal_ideas_from_cart(
         pipeline, discounts, req.discount_item_ids, max_results=req.max_results, language=req.language,
+        discount_snapshot_id=scanned_at,
     )
 
 
@@ -236,10 +244,61 @@ def meal_ideas_from_store(req: MealIdeasFromStoreRequest):
     triggers a new Tjek scan, reclassification, or discount re-analysis -- store_name is
     matched against the latest cached snapshot exactly like /recipes/discounted itself
     already does, just filtered down to one store first (Task E2's hard rule)."""
-    discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    discounts, scanned_at = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
     return generate_meal_ideas_from_store(
         pipeline, discounts, req.store_name, max_results=req.max_results, language=req.language,
+        discount_snapshot_id=scanned_at,
     )
+
+
+# Epic J3's fixed reason set -- exactly the six the change spec calls out, so a
+# malformed/typo'd reason string is rejected at the API boundary (a 422) rather than
+# silently accepted and polluting the feedback table with free-text noise.
+MealIdeaFeedbackReason = Literal[
+    "strange_combination",
+    "too_many_missing_ingredients",
+    "too_complicated",
+    "incorrect_product",
+    "not_an_everyday_meal",
+    "ingredient_availability_was_wrong",
+]
+
+
+class MealIdeaFeedbackRequest(BaseModel):
+    request_id: str
+    recommendation_type: Literal["cart", "store"]
+    idea_title: Optional[str] = None
+    helpful: bool
+    reasons: List[MealIdeaFeedbackReason] = []
+    selected_items_used: List[str] = []
+    missing_required_ingredients: List[str] = []
+    source_type: Optional[Literal["retrieved", "generated"]] = None
+
+
+@app.post("/meal-ideas/feedback")
+def meal_ideas_feedback(req: MealIdeaFeedbackRequest):
+    """Epic J3: a quick "Helpful"/"Not helpful" tap on one returned meal idea, stored
+    alongside that idea's own output (title, what it used, what it was missing,
+    retrieved vs. generated) so real usage feeds back into what gets fixed next.
+    `request_id` (echoed back in every /meal-ideas/from-cart and /meal-ideas/from-store
+    response, see meal_ideas.py) correlates this back to that request's own Epic J1 log
+    line for deeper debugging without the app having to resend the full cart/store
+    inputs here. Fire-and-forget from the app's point of view -- no response body
+    beyond a plain acknowledgement, nothing here should ever block or retry the user's
+    flow."""
+    save_meal_idea_feedback(
+        config.DISCOUNTS_DB_PATH,
+        request_id=req.request_id,
+        recommendation_type=req.recommendation_type,
+        idea_title=req.idea_title,
+        helpful=req.helpful,
+        reasons=list(req.reasons),
+        selected_items_used=req.selected_items_used,
+        missing_required_ingredients=req.missing_required_ingredients,
+        source_type=req.source_type,
+        submitted_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return {"status": "ok"}
 
 
 class IngredientOffersRequest(BaseModel):
@@ -273,6 +332,21 @@ def ingredient_offers(req: IngredientOffersRequest):
             for name in req.ingredients
         ],
     }
+
+
+@app.get("/admin/classification-quality")
+def classification_quality():
+    """Epic J2: visibility into classification quality for the team maintaining the
+    classifier -- percentage of the current catalogue classified by the keyword
+    heuristic vs. the LLM tier vs. a manual override vs. left genuinely uncertain, plus
+    which specific products are excluded and manually corrected most often (see
+    classification_report.py for exactly what "most often" means here). Read-only,
+    no personal data at all -- same no-auth posture as every other route on this API
+    (see the CORS comment above)."""
+    discounts, _ = get_latest_snapshot(config.DISCOUNTS_DB_PATH)
+    product_names = list({row["product_name"] for row in discounts if row.get("product_name")})
+    classification_sources = get_classification_sources(config.DISCOUNTS_DB_PATH, product_names)
+    return build_classification_quality_report(discounts, classification_sources)
 
 
 @app.get("/health")

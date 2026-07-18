@@ -162,6 +162,10 @@ export interface MealIdeasFromCartResponse {
   ideas: MealIdea[];
   excluded_cart_items: ExcludedItem[];
   source: MealIdeaSource;
+  // Epic J3: echoed back so a later "Helpful"/"Not helpful" tap on one of these ideas
+  // can be correlated back to this exact request (see api/client.ts's
+  // submitMealIdeaFeedback()) without resending the full cart/store inputs.
+  request_id: string;
 }
 
 export interface MealIdeasFromStoreResponse {
@@ -169,7 +173,19 @@ export interface MealIdeasFromStoreResponse {
   excluded_store_items: ExcludedItem[];
   store_name: string;
   source: MealIdeaSource;
+  request_id: string;
 }
+
+// Epic J3: mirrors rag/pipeline_server.py's MealIdeaFeedbackReason Literal exactly --
+// keep in sync by hand, same convention every other shared type on this page already
+// follows.
+export type MealIdeaFeedbackReason =
+  | "strange_combination"
+  | "too_many_missing_ingredients"
+  | "too_complicated"
+  | "incorrect_product"
+  | "not_an_everyday_meal"
+  | "ingredient_availability_was_wrong";
 
 // Epic F: mirrors rag/ingredient_index.py's match_ingredient_offers() output --
 // POST /ingredient-offers returns these for each requested ingredient name, read from

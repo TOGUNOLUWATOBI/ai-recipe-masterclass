@@ -395,6 +395,45 @@ def test_generation_fallback_also_applies_epic_d_structuring():
     assert idea["completion_status"] == "complete"
 
 
+def test_generation_retries_once_under_a_stricter_prompt_when_validation_fails():
+    """Task G4: a malformed first attempt (no title -- no '### ' heading at all) must
+    be retried once under a stricter prompt before this angle is given up on."""
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = []
+    pipeline.generator.generate.side_effect = [
+        "Just some ingredients, no proper title or sections at all.",  # fails validation: no title
+        "### Chicken Rice Bowl\n\n**Ingredients:**\n- chicken breast\n\n**Instructions:**\n1. Cook everything.",
+    ]
+    discounts = [_row("KYLLINGFILET")]
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"], max_results=1)
+
+    assert len(result["ideas"]) == 1
+    assert result["ideas"][0]["title"] == "Chicken Rice Bowl"
+    assert pipeline.generator.generate.call_count == 2
+    # The retry call's system prompt must actually be the stricter one.
+    first_system_prompt = pipeline.generator.generate.call_args_list[0].args[2]
+    second_system_prompt = pipeline.generator.generate.call_args_list[1].args[2]
+    assert "your previous attempt did not follow the rules" not in first_system_prompt.lower()
+    assert "your previous attempt did not follow the rules" in second_system_prompt.lower()
+
+
+def test_generation_gives_up_on_an_angle_after_the_retry_also_fails_validation():
+    """If even the stricter retry still fails, that angle contributes no idea -- never
+    a second retry (exactly one retry, per Task G4), never a malformed idea returned
+    as if valid."""
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = []
+    pipeline.generator.generate.return_value = "Still no title or ingredients section."
+    discounts = [_row("KYLLINGFILET")]
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"], max_results=1)
+
+    assert result["ideas"] == []
+    # Exactly one retry -- the first attempt plus one stricter retry, never more.
+    assert pipeline.generator.generate.call_count == 2
+
+
 def test_generation_fallback_never_crashes_when_the_llm_call_fails():
     pipeline = MagicMock()
     pipeline.find_recipes_from_ingredients.return_value = []
@@ -498,3 +537,150 @@ def test_from_store_a_store_with_no_offers_at_all_returns_empty_ideas():
     assert result["ideas"] == []
     assert result["excluded_store_items"] == []
     pipeline.find_recipes_from_ingredients.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Epic J1: recommendation-event logging
+# ---------------------------------------------------------------------------
+
+def test_internal_log_only_fields_never_leak_into_the_public_cart_response():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [_grounded_result("X", ["chicken breast"])]
+    discounts = [_row("KYLLINGFILET")]
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"])
+
+    assert "_retrieved_candidate_count" not in result
+    assert "_validation_failure" not in result
+
+
+def test_internal_log_only_fields_never_leak_into_the_public_store_response():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [_grounded_result("X", ["chicken breast"])]
+    discounts = [_row("KYLLINGFILET", store_name="Kiwi")]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi")
+
+    assert "_retrieved_candidate_count" not in result
+    assert "_validation_failure" not in result
+
+
+def test_logs_a_recommendation_event_for_a_cart_request(monkeypatch):
+    logged = {}
+    monkeypatch.setattr(
+        "rag.meal_ideas.log_recommendation_event", lambda **fields: logged.update(fields),
+    )
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [
+        _grounded_result("Chicken and Rice", ["chicken breast", "rice"]),
+    ]
+    discounts = [
+        _row("KYLLINGFILET"),
+        _row("Coca-Cola", recipe_eligible=False, recipe_exclusion_reason="beverage"),
+    ]
+
+    generate_meal_ideas_from_cart(
+        pipeline, discounts, ["Kiwi::KYLLINGFILET", "Kiwi::Coca-Cola"], discount_snapshot_id="2026-07-17T12:00:00",
+    )
+
+    assert logged["recommendation_type"] == "cart"
+    assert logged["selected_product_ids"] == ["Kiwi::KYLLINGFILET", "Kiwi::Coca-Cola"]
+    assert logged["eligible_product_ids"] == ["KYLLINGFILET"]
+    assert logged["excluded_product_ids"] == ["Coca-Cola"]
+    assert logged["retrieved_candidate_count"] == 1
+    assert logged["generated_fallback_used"] is False
+    assert logged["meal_ideas_returned"] == 1
+    assert logged["ingredient_coverage"] == 50.0
+    assert logged["missing_ingredient_count"] == 1
+    assert logged["discount_snapshot_id"] == "2026-07-17T12:00:00"
+    assert logged["validation_failure"] is False
+    assert isinstance(logged["latency_seconds"], float)
+    assert isinstance(logged["request_id"], str) and logged["request_id"]
+
+
+def test_logs_a_recommendation_event_with_no_ideas_when_nothing_is_eligible(monkeypatch):
+    logged = {}
+    monkeypatch.setattr(
+        "rag.meal_ideas.log_recommendation_event", lambda **fields: logged.update(fields),
+    )
+    pipeline = MagicMock()
+    discounts = [_row("Coca-Cola", recipe_eligible=False, recipe_exclusion_reason="beverage")]
+
+    generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::Coca-Cola"])
+
+    assert logged["meal_ideas_returned"] == 0
+    assert logged["ingredient_coverage"] is None
+    assert logged["missing_ingredient_count"] is None
+    assert logged["retrieved_candidate_count"] == 0
+
+
+def test_logs_generated_fallback_used_and_validation_failure_when_retrieval_finds_nothing(monkeypatch):
+    logged = {}
+    monkeypatch.setattr(
+        "rag.meal_ideas.log_recommendation_event", lambda **fields: logged.update(fields),
+    )
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = []
+    pipeline.generator.generate.side_effect = [
+        "Just some ingredients, no proper title or sections at all.",  # fails validation
+        "### Chicken Rice Bowl\n\n**Ingredients:**\n- chicken breast\n\n**Instructions:**\n1. Cook everything.",
+    ]
+    discounts = [_row("KYLLINGFILET")]
+
+    generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"], max_results=1)
+
+    assert logged["generated_fallback_used"] is True
+    assert logged["validation_failure"] is True
+
+
+def test_logs_a_recommendation_event_for_a_store_request(monkeypatch):
+    logged = {}
+    monkeypatch.setattr(
+        "rag.meal_ideas.log_recommendation_event", lambda **fields: logged.update(fields),
+    )
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [
+        _grounded_result("Chicken and Rice", ["chicken breast"]),
+    ]
+    discounts = [_row("KYLLINGFILET", store_name="Kiwi")]
+
+    generate_meal_ideas_from_store(pipeline, discounts, "Kiwi", discount_snapshot_id="2026-07-17T12:00:00")
+
+    assert logged["recommendation_type"] == "store"
+    assert logged["discount_snapshot_id"] == "2026-07-17T12:00:00"
+    assert logged["eligible_product_ids"] == ["KYLLINGFILET"]
+    assert logged["meal_ideas_returned"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Epic J3: request_id echoed back so the app can attach feedback to this request
+# ---------------------------------------------------------------------------
+
+def test_cart_response_includes_a_non_empty_request_id():
+    pipeline = MagicMock()
+    discounts = [_row("Coca-Cola", recipe_eligible=False, recipe_exclusion_reason="beverage")]
+
+    result = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::Coca-Cola"])
+
+    assert isinstance(result["request_id"], str) and result["request_id"]
+
+
+def test_store_response_includes_a_non_empty_request_id():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [_grounded_result("X", ["chicken breast"])]
+    discounts = [_row("KYLLINGFILET", store_name="Kiwi")]
+
+    result = generate_meal_ideas_from_store(pipeline, discounts, "Kiwi")
+
+    assert isinstance(result["request_id"], str) and result["request_id"]
+
+
+def test_cart_and_store_requests_each_get_a_distinct_request_id():
+    pipeline = MagicMock()
+    pipeline.find_recipes_from_ingredients.return_value = [_grounded_result("X", ["chicken breast"])]
+    discounts = [_row("KYLLINGFILET", store_name="Kiwi")]
+
+    first = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"])
+    second = generate_meal_ideas_from_cart(pipeline, discounts, ["Kiwi::KYLLINGFILET"])
+
+    assert first["request_id"] != second["request_id"]
