@@ -74,6 +74,18 @@ export const translations = {
     mealIdeasViewMoreOffers: (count: number) => `View ${count} more offer${count === 1 ? "" : "s"}`,
     mealIdeasShowFewerOffers: "Show fewer offers",
 
+    mealIdeasFeedbackPrompt: "Was this a good suggestion?",
+    mealIdeasFeedbackHelpful: "Helpful",
+    mealIdeasFeedbackNotHelpful: "Not helpful",
+    mealIdeasFeedbackSubmit: "Send feedback",
+    mealIdeasFeedbackThanks: "Thanks for the feedback!",
+    mealIdeasFeedbackReasonStrangeCombination: "Strange combination",
+    mealIdeasFeedbackReasonTooManyMissingIngredients: "Too many missing ingredients",
+    mealIdeasFeedbackReasonTooComplicated: "Too complicated",
+    mealIdeasFeedbackReasonIncorrectProduct: "Incorrect product",
+    mealIdeasFeedbackReasonNotAnEverydayMeal: "Not an everyday meal",
+    mealIdeasFeedbackReasonIngredientAvailabilityWasWrong: "Ingredient availability was wrong",
+
     dealDetailRecipesWith: (productName: string) => `Recipes with ${productName}`,
     dealDetailEmpty: "No recipes found for this item.",
 
@@ -155,6 +167,18 @@ export const translations = {
     mealIdeasPossibleMatchLabel: "Mulig treff",
     mealIdeasViewMoreOffers: (count: number) => `Vis ${count} tilbud til`,
     mealIdeasShowFewerOffers: "Vis færre tilbud",
+
+    mealIdeasFeedbackPrompt: "Var dette et godt forslag?",
+    mealIdeasFeedbackHelpful: "Nyttig",
+    mealIdeasFeedbackNotHelpful: "Ikke nyttig",
+    mealIdeasFeedbackSubmit: "Send tilbakemelding",
+    mealIdeasFeedbackThanks: "Takk for tilbakemeldingen!",
+    mealIdeasFeedbackReasonStrangeCombination: "Rar kombinasjon",
+    mealIdeasFeedbackReasonTooManyMissingIngredients: "For mange manglende ingredienser",
+    mealIdeasFeedbackReasonTooComplicated: "For komplisert",
+    mealIdeasFeedbackReasonIncorrectProduct: "Feil produkt",
+    mealIdeasFeedbackReasonNotAnEverydayMeal: "Ikke et hverdagsmåltid",
+    mealIdeasFeedbackReasonIngredientAvailabilityWasWrong: "Feil om ingrediens-tilgjengelighet",
 
     dealDetailRecipesWith: (productName: string) => `Oppskrifter med ${productName}`,
     dealDetailEmpty: "Ingen oppskrifter funnet for denne varen.",

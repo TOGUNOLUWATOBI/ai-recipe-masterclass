@@ -21,10 +21,13 @@ from rag import pipeline_server  # noqa: E402
 from rag.pipeline_server import (  # noqa: E402
     IngredientOffersRequest,
     IngredientsRequest,
+    MealIdeaFeedbackRequest,
     MealIdeasFromCartRequest,
     MealIdeasFromStoreRequest,
     QueryRequest,
+    classification_quality,
     ingredient_offers,
+    meal_ideas_feedback,
     meal_ideas_from_cart,
     meal_ideas_from_store,
     query,
@@ -334,11 +337,12 @@ def test_meal_ideas_from_cart_reads_the_latest_snapshot_and_delegates(monkeypatc
 
     seen = {}
 
-    def fake_generate(pipeline, discounts, discount_item_ids, max_results=5, language="en"):
+    def fake_generate(pipeline, discounts, discount_item_ids, max_results=5, language="en", discount_snapshot_id=None):
         seen["discounts"] = discounts
         seen["discount_item_ids"] = discount_item_ids
         seen["max_results"] = max_results
         seen["language"] = language
+        seen["discount_snapshot_id"] = discount_snapshot_id
         return {"ideas": [], "excluded_cart_items": []}
 
     monkeypatch.setattr(pipeline_server, "generate_meal_ideas_from_cart", fake_generate)
@@ -351,6 +355,8 @@ def test_meal_ideas_from_cart_reads_the_latest_snapshot_and_delegates(monkeypatc
     assert seen["discount_item_ids"] == ["Kiwi::KYLLINGFILET"]
     assert seen["max_results"] == 3
     assert seen["language"] == "no"
+    # Epic J1: the snapshot's own scanned_at timestamp doubles as discount_snapshot_id.
+    assert seen["discount_snapshot_id"] == "2026-07-16T05:00:00Z"
     assert result == {"ideas": [], "excluded_cart_items": []}
 
 
@@ -370,11 +376,12 @@ def test_meal_ideas_from_store_reads_the_latest_snapshot_and_delegates(monkeypat
 
     seen = {}
 
-    def fake_generate(pipeline, discounts, store_name, max_results=5, language="en"):
+    def fake_generate(pipeline, discounts, store_name, max_results=5, language="en", discount_snapshot_id=None):
         seen["discounts"] = discounts
         seen["store_name"] = store_name
         seen["max_results"] = max_results
         seen["language"] = language
+        seen["discount_snapshot_id"] = discount_snapshot_id
         return {"ideas": [], "excluded_store_items": [], "store_name": store_name}
 
     monkeypatch.setattr(pipeline_server, "generate_meal_ideas_from_store", fake_generate)
@@ -385,6 +392,7 @@ def test_meal_ideas_from_store_reads_the_latest_snapshot_and_delegates(monkeypat
     assert seen["store_name"] == "Kiwi"
     assert seen["max_results"] == 3
     assert seen["language"] == "no"
+    assert seen["discount_snapshot_id"] == "2026-07-16T05:00:00Z"
     assert result == {"ideas": [], "excluded_store_items": [], "store_name": "Kiwi"}
 
 
@@ -465,3 +473,86 @@ def test_ingredient_offers_never_scans_or_reclassifies(monkeypatch):
     result = ingredient_offers(IngredientOffersRequest(ingredients=["lemon"]))
 
     assert result["ingredients"] == [{"ingredient": "lemon", "offers": []}]
+
+
+# ---------------------------------------------------------------------------
+# /admin/classification-quality -- Epic J2
+# ---------------------------------------------------------------------------
+
+def test_classification_quality_reads_the_snapshot_and_delegates(monkeypatch):
+    """Thin-adapter shape, same as every other route here: fetch the current
+    snapshot and each product's cached classification_source, hand both straight to
+    classification_report.build_classification_quality_report() (see
+    test_classification_report.py for that function's own behavior)."""
+    snapshot = [
+        {"product_name": "KYLLINGFILET", "store_name": "Kiwi", "recipe_eligible": True, "recipe_exclusion_reason": None},
+        {"product_name": "COCA-COLA ZERO", "store_name": "Kiwi", "recipe_eligible": False, "recipe_exclusion_reason": "beverage"},
+    ]
+    monkeypatch.setattr(pipeline_server, "get_latest_snapshot", lambda db_path: (snapshot, "2026-07-16T05:00:00Z"))
+
+    seen = {}
+
+    def fake_get_classification_sources(db_path, product_names):
+        seen["product_names"] = sorted(product_names)
+        return {"COCA-COLA ZERO": "manual_override"}
+
+    monkeypatch.setattr(pipeline_server, "get_classification_sources", fake_get_classification_sources)
+
+    result = classification_quality()
+
+    assert seen["product_names"] == ["COCA-COLA ZERO", "KYLLINGFILET"]
+    assert result["total_unique_products"] == 2
+    assert result["classified_by_manual_override_pct"] == 50.0
+    assert result["classified_by_heuristic_pct"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# /meal-ideas/feedback -- Epic J3
+# ---------------------------------------------------------------------------
+
+def test_meal_ideas_feedback_request_defaults():
+    req = MealIdeaFeedbackRequest(request_id="abc123", recommendation_type="cart", helpful=True)
+
+    assert req.idea_title is None
+    assert req.reasons == []
+    assert req.selected_items_used == []
+    assert req.missing_required_ingredients == []
+    assert req.source_type is None
+
+
+def test_meal_ideas_feedback_rejects_an_unknown_reason():
+    with pytest.raises(Exception):
+        MealIdeaFeedbackRequest(
+            request_id="abc123", recommendation_type="cart", helpful=False, reasons=["not_a_real_reason"],
+        )
+
+
+def test_meal_ideas_feedback_saves_and_acknowledges(monkeypatch):
+    seen = {}
+
+    def fake_save(db_path, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(pipeline_server, "save_meal_idea_feedback", fake_save)
+
+    result = meal_ideas_feedback(MealIdeaFeedbackRequest(
+        request_id="abc123",
+        recommendation_type="cart",
+        idea_title="Chicken and Rice",
+        helpful=False,
+        reasons=["too_complicated", "incorrect_product"],
+        selected_items_used=["chicken fillet"],
+        missing_required_ingredients=["rice"],
+        source_type="retrieved",
+    ))
+
+    assert result == {"status": "ok"}
+    assert seen["request_id"] == "abc123"
+    assert seen["recommendation_type"] == "cart"
+    assert seen["idea_title"] == "Chicken and Rice"
+    assert seen["helpful"] is False
+    assert seen["reasons"] == ["too_complicated", "incorrect_product"]
+    assert seen["selected_items_used"] == ["chicken fillet"]
+    assert seen["missing_required_ingredients"] == ["rice"]
+    assert seen["source_type"] == "retrieved"
+    assert isinstance(seen["submitted_at"], str) and seen["submitted_at"]

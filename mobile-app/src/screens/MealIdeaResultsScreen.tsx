@@ -2,13 +2,31 @@ import type { RouteProp } from "@react-navigation/native";
 import { useRoute } from "@react-navigation/native";
 import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { getIngredientOffers, getMealIdeasFromCart, getMealIdeasFromStore } from "../api/client";
+import { getIngredientOffers, getMealIdeasFromCart, getMealIdeasFromStore, submitMealIdeaFeedback } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { useCart } from "../cart/CartContext";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useLanguage } from "../i18n/LanguageContext";
+import { translations } from "../i18n/translations";
 import type { MealIdeasStackParamList } from "../navigation/types";
-import type { IngredientOffer, MealIdea } from "../types/api";
+import type { IngredientOffer, MealIdea, MealIdeaFeedbackReason } from "../types/api";
+
+// Only the plain-string translation keys -- excludes the ones typed as functions
+// (e.g. mealIdeasViewMoreOffers), which Text can't render directly.
+type StringTranslationKey = {
+  [K in keyof typeof translations.en]: (typeof translations.en)[K] extends string ? K : never;
+}[keyof typeof translations.en];
+
+// Epic J3: the six fixed reasons the change spec calls out for a "Not helpful" tap --
+// order matches the story's own listing. Keyed to translations.ts entries below.
+const FEEDBACK_REASONS: { reason: MealIdeaFeedbackReason; labelKey: StringTranslationKey }[] = [
+  { reason: "strange_combination", labelKey: "mealIdeasFeedbackReasonStrangeCombination" },
+  { reason: "too_many_missing_ingredients", labelKey: "mealIdeasFeedbackReasonTooManyMissingIngredients" },
+  { reason: "too_complicated", labelKey: "mealIdeasFeedbackReasonTooComplicated" },
+  { reason: "incorrect_product", labelKey: "mealIdeasFeedbackReasonIncorrectProduct" },
+  { reason: "not_an_everyday_meal", labelKey: "mealIdeasFeedbackReasonNotAnEverydayMeal" },
+  { reason: "ingredient_availability_was_wrong", labelKey: "mealIdeasFeedbackReasonIngredientAvailabilityWasWrong" },
+];
 
 const COMPLETION_LABEL_KEY = {
   complete: "mealIdeasCompletionComplete",
@@ -92,6 +110,106 @@ function IngredientOfferStatus({ ingredientName, offers }: { ingredientName: str
   );
 }
 
+// Epic J3: a quick "Helpful"/"Not helpful" tap on this one idea, stored alongside its
+// own output (see api/client.ts's submitMealIdeaFeedback()). "Not helpful" reveals the
+// six fixed reason chips (multi-select, optional) before actually submitting, so
+// exactly one feedback row is ever written per card -- not one row per chip tap.
+function MealIdeaFeedbackControl({
+  idea,
+  requestId,
+  recommendationType,
+}: {
+  idea: MealIdea;
+  requestId: string;
+  recommendationType: "cart" | "store";
+}) {
+  const { t } = useLanguage();
+  const [stage, setStage] = useState<"idle" | "choosing_reasons" | "submitted">("idle");
+  const [selectedReasons, setSelectedReasons] = useState<Set<MealIdeaFeedbackReason>>(new Set());
+
+  function submit(helpful: boolean, reasons: MealIdeaFeedbackReason[]) {
+    setStage("submitted");
+    submitMealIdeaFeedback(
+      requestId,
+      recommendationType,
+      idea.title,
+      helpful,
+      reasons,
+      idea.selected_items_used,
+      idea.missing_required_ingredients,
+      idea.source_type
+    );
+  }
+
+  function toggleReason(reason: MealIdeaFeedbackReason) {
+    setSelectedReasons((prev) => {
+      const next = new Set(prev);
+      if (next.has(reason)) next.delete(reason);
+      else next.add(reason);
+      return next;
+    });
+  }
+
+  if (stage === "submitted") {
+    return (
+      <View style={styles.feedbackSection}>
+        <Text style={styles.feedbackThanks} testID="meal-idea-feedback-thanks">
+          {t.mealIdeasFeedbackThanks}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.feedbackSection}>
+      <View style={styles.feedbackRow}>
+        <Text style={styles.feedbackPrompt}>{t.mealIdeasFeedbackPrompt}</Text>
+        <TouchableOpacity
+          onPress={() => submit(true, [])}
+          style={styles.feedbackButton}
+          testID="meal-idea-feedback-helpful"
+        >
+          <Text style={styles.feedbackButtonText}>{t.mealIdeasFeedbackHelpful}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setStage("choosing_reasons")}
+          style={styles.feedbackButton}
+          testID="meal-idea-feedback-not-helpful"
+        >
+          <Text style={styles.feedbackButtonText}>{t.mealIdeasFeedbackNotHelpful}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {stage === "choosing_reasons" ? (
+        <View style={styles.feedbackReasons} testID="meal-idea-feedback-reasons">
+          <View style={styles.reasonChipRow}>
+            {FEEDBACK_REASONS.map(({ reason, labelKey }) => {
+              const isSelected = selectedReasons.has(reason);
+              return (
+                <TouchableOpacity
+                  key={reason}
+                  onPress={() => toggleReason(reason)}
+                  style={[styles.reasonChip, isSelected && styles.reasonChipSelected]}
+                  testID={`meal-idea-feedback-reason-${reason}`}
+                >
+                  <Text style={[styles.reasonChipText, isSelected && styles.reasonChipTextSelected]}>{t[labelKey]}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <TouchableOpacity
+            onPress={() => submit(false, Array.from(selectedReasons))}
+            style={styles.feedbackSubmitButton}
+            testID="meal-idea-feedback-submit"
+          >
+            <Text style={styles.feedbackSubmitButtonText}>{t.mealIdeasFeedbackSubmit}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 // Epic E4/E5: shows what a suggestion uses and what's still missing without ever
 // implying the app knows a store's full inventory -- the missing-ingredients label
 // differs by source (see missingLabel prop): the user's own cart can plainly say
@@ -101,10 +219,14 @@ function MealIdeaCard({
   idea,
   missingLabel,
   offersByIngredient,
+  requestId,
+  recommendationType,
 }: {
   idea: MealIdea;
   missingLabel: string;
   offersByIngredient: Record<string, IngredientOffer[]>;
+  requestId: string;
+  recommendationType: "cart" | "store";
 }) {
   const { t } = useLanguage();
   // Epic F5: "On offer this week" covers both required and optional ingredients --
@@ -162,6 +284,8 @@ function MealIdeaCard({
           ))}
         </View>
       ) : null}
+
+      <MealIdeaFeedbackControl idea={idea} requestId={requestId} recommendationType={recommendationType} />
     </View>
   );
 }
@@ -184,6 +308,9 @@ export function MealIdeaResultsScreen() {
   // ideas the user actually asked for (same "best-effort, never a hard error"
   // convention as CartScreen's own expiry check).
   const [offersByIngredient, setOffersByIngredient] = useState<Record<string, IngredientOffer[]>>({});
+  // Epic J3: needed to correlate a later "Helpful"/"Not helpful" tap back to the
+  // request that produced these specific ideas (see submitMealIdeaFeedback()).
+  const [requestId, setRequestId] = useState<string | null>(null);
 
   const params = route.params;
 
@@ -223,10 +350,16 @@ export function MealIdeaResultsScreen() {
             return;
           }
           const response = await getMealIdeasFromCart(eligibleSelectedIds, 5, language);
-          if (!cancelled) setIdeas(response.ideas);
+          if (!cancelled) {
+            setIdeas(response.ideas);
+            setRequestId(response.request_id);
+          }
         } else {
           const response = await getMealIdeasFromStore(params.storeName, 5, language);
-          if (!cancelled) setIdeas(response.ideas);
+          if (!cancelled) {
+            setIdeas(response.ideas);
+            setRequestId(response.request_id);
+          }
         }
       } catch (err) {
         if (!cancelled) setErrorMessage(userMessageForError(err));
@@ -311,7 +444,14 @@ export function MealIdeaResultsScreen() {
         <Text style={styles.emptyText}>{emptyMessage}</Text>
       ) : (
         ideas.map((idea, index) => (
-          <MealIdeaCard key={index} idea={idea} missingLabel={missingLabel} offersByIngredient={offersByIngredient} />
+          <MealIdeaCard
+            key={index}
+            idea={idea}
+            missingLabel={missingLabel}
+            offersByIngredient={offersByIngredient}
+            requestId={requestId ?? ""}
+            recommendationType={params.source}
+          />
         ))
       )}
     </ScrollView>
@@ -341,4 +481,18 @@ const styles = StyleSheet.create({
   offerPrice: { fontSize: 13, fontWeight: "700", color: "#e63946" },
   offerReferencePrice: { fontSize: 11, color: "#999", textDecorationLine: "line-through" },
   viewMoreText: { fontSize: 12, color: "#e63946", fontWeight: "600" },
+  feedbackSection: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: "#f0f0f0", gap: 8 },
+  feedbackRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  feedbackPrompt: { fontSize: 12, color: "#666", flex: 1 },
+  feedbackButton: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16, backgroundColor: "#f0f0f0" },
+  feedbackButtonText: { fontSize: 12, fontWeight: "600", color: "#333" },
+  feedbackThanks: { fontSize: 12, color: "#2e7d32", fontWeight: "600" },
+  feedbackReasons: { gap: 8 },
+  reasonChipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  reasonChip: { paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14, borderWidth: 1, borderColor: "#ddd" },
+  reasonChipSelected: { backgroundColor: "#fdecea", borderColor: "#e63946" },
+  reasonChipText: { fontSize: 11, color: "#555" },
+  reasonChipTextSelected: { color: "#e63946", fontWeight: "600" },
+  feedbackSubmitButton: { alignSelf: "flex-start", paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, backgroundColor: "#e63946" },
+  feedbackSubmitButtonText: { fontSize: 12, fontWeight: "700", color: "#fff" },
 });

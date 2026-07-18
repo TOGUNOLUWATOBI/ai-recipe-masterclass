@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements-pipeline.txt
 # Only the files pipeline_server.py actually imports — no torch/sentence-transformers/
 # qdrant-client here, retrieval lives entirely in the other container.
 COPY rag/__init__.py ./rag/__init__.py
+COPY rag/ai_policy.py ./rag/ai_policy.py
+COPY rag/classification_report.py ./rag/classification_report.py
 COPY rag/config.py ./rag/config.py
 COPY rag/discounts_store.py ./rag/discounts_store.py
 COPY rag/generator.py ./rag/generator.py
@@ -15,6 +17,7 @@ COPY rag/grocery_discounts.py ./rag/grocery_discounts.py
 COPY rag/grocery_terms.py ./rag/grocery_terms.py
 COPY rag/ingredient_index.py ./rag/ingredient_index.py
 COPY rag/meal_ideas.py ./rag/meal_ideas.py
+COPY rag/observability.py ./rag/observability.py
 COPY rag/pipeline.py ./rag/pipeline.py
 COPY rag/product_classification.py ./rag/product_classification.py
 COPY rag/manual_product_overrides.json ./rag/manual_product_overrides.json

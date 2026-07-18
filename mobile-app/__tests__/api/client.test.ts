@@ -5,6 +5,7 @@ import {
   getMealIdeasFromCart,
   getMealIdeasFromStore,
   getRecipesFromIngredients,
+  submitMealIdeaFeedback,
 } from "../../src/api/client";
 import { ApiError } from "../../src/api/errors";
 import { ValidationError } from "../../src/api/validation";
@@ -338,6 +339,64 @@ describe("getIngredientOffers", () => {
   it("throws ApiError('invalid_response', ...) when ingredients is missing", async () => {
     mockFetchOnce({ snapshot_updated_at: null });
     await expect(getIngredientOffers(["chicken fillet"])).rejects.toMatchObject({ kind: "invalid_response" });
+  });
+});
+
+describe("submitMealIdeaFeedback", () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it("posts the feedback payload with the given fields", async () => {
+    mockFetchOnce({ status: "ok" });
+
+    await submitMealIdeaFeedback(
+      "req-abc", "cart", "Chicken and Rice", false,
+      ["too_complicated"], ["chicken fillet"], ["rice"], "retrieved"
+    );
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toContain("/meal-ideas/feedback");
+    expect(JSON.parse(options.body)).toEqual({
+      request_id: "req-abc",
+      recommendation_type: "cart",
+      idea_title: "Chicken and Rice",
+      helpful: false,
+      reasons: ["too_complicated"],
+      selected_items_used: ["chicken fillet"],
+      missing_required_ingredients: ["rice"],
+      source_type: "retrieved",
+    });
+  });
+
+  it("defaults reasons/selected/missing to empty arrays and source_type to null", async () => {
+    mockFetchOnce({ status: "ok" });
+
+    await submitMealIdeaFeedback("req-abc", "store", "Ribbe", true);
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      request_id: "req-abc",
+      recommendation_type: "store",
+      idea_title: "Ribbe",
+      helpful: true,
+      reasons: [],
+      selected_items_used: [],
+      missing_required_ingredients: [],
+      source_type: null,
+    });
+  });
+
+  it("never throws when the request fails -- best-effort only", async () => {
+    (global.fetch as jest.Mock).mockRejectedValueOnce(new Error("network down"));
+
+    await expect(submitMealIdeaFeedback("req-abc", "cart", "Chicken and Rice", true)).resolves.toBeUndefined();
+  });
+
+  it("never throws on a non-2xx response", async () => {
+    mockFetchOnce({}, false, 500);
+
+    await expect(submitMealIdeaFeedback("req-abc", "cart", "Chicken and Rice", true)).resolves.toBeUndefined();
   });
 });
 

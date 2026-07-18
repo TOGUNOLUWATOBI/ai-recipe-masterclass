@@ -1,6 +1,7 @@
 """Tests for the SQLite discount cache — the read/write contract between
 refresh_discounts.py (writer) and pipeline_server.py's /recipes/discounted (reader)."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -8,10 +9,12 @@ import pytest
 
 from rag.discounts_store import (
     get_cached_classifications,
+    get_classification_sources,
     get_ingredient_index_rows,
     get_latest_snapshot,
     rebuild_ingredient_index,
     save_classifications,
+    save_meal_idea_feedback,
     save_snapshot,
 )
 
@@ -452,3 +455,113 @@ def test_shared_connection_writes_are_only_durable_after_the_owning_block_exits(
         # Reading with a fresh, separate connection -- the crashed run's write must
         # not be visible at all, since it was never committed.
         assert get_ingredient_index_rows(db_path) == []
+
+
+# ---------------------------------------------------------------------------
+# get_classification_sources -- Epic J2
+# ---------------------------------------------------------------------------
+
+def test_get_classification_sources_is_empty_before_anything_cached(db_path):
+    assert get_classification_sources(db_path, ["Kyllingfilet 500g"]) == {}
+
+
+def test_get_classification_sources_is_a_noop_for_an_empty_name_list(db_path):
+    assert get_classification_sources(db_path, []) == {}
+
+
+def test_get_classification_sources_returns_the_source_for_cached_names_only(db_path):
+    classification = {
+        "shopping_group": "food", "food_usage_class": "primary_ingredient", "meal_role": "protein",
+        "recipe_eligible": True, "recipe_exclusion_reason": None,
+    }
+    save_classifications(
+        db_path, {"Kyllingfilet 500g": classification},
+        classification_source="llm", classified_at="2026-07-16T06:00:00Z", classifier_version="epic-a-v1",
+    )
+
+    sources = get_classification_sources(db_path, ["Kyllingfilet 500g", "Never Classified"])
+
+    assert sources == {"Kyllingfilet 500g": "llm"}
+
+
+# ---------------------------------------------------------------------------
+# save_meal_idea_feedback -- Epic J3
+# ---------------------------------------------------------------------------
+
+def _read_feedback_rows(db_path):
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM meal_idea_feedback").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def test_save_meal_idea_feedback_persists_one_row(db_path):
+    save_meal_idea_feedback(
+        db_path,
+        request_id="abc123",
+        recommendation_type="cart",
+        idea_title="Chicken and Rice",
+        helpful=True,
+        reasons=[],
+        selected_items_used=["chicken fillet"],
+        missing_required_ingredients=["rice"],
+        source_type="retrieved",
+        submitted_at="2026-07-17T12:00:00+00:00",
+    )
+
+    rows = _read_feedback_rows(db_path)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["request_id"] == "abc123"
+    assert row["recommendation_type"] == "cart"
+    assert row["idea_title"] == "Chicken and Rice"
+    assert row["helpful"] == 1
+    assert json.loads(row["selected_items_used"]) == ["chicken fillet"]
+    assert json.loads(row["missing_required_ingredients"]) == ["rice"]
+    assert row["source_type"] == "retrieved"
+    assert row["submitted_at"] == "2026-07-17T12:00:00+00:00"
+
+
+def test_save_meal_idea_feedback_persists_not_helpful_reasons(db_path):
+    save_meal_idea_feedback(
+        db_path,
+        request_id="abc123",
+        recommendation_type="store",
+        idea_title="Ribbe",
+        helpful=False,
+        reasons=["too_complicated", "incorrect_product"],
+        selected_items_used=[],
+        missing_required_ingredients=[],
+        source_type="generated",
+        submitted_at="2026-07-17T12:00:00+00:00",
+    )
+
+    rows = _read_feedback_rows(db_path)
+
+    assert rows[0]["helpful"] == 0
+    assert json.loads(rows[0]["reasons"]) == ["too_complicated", "incorrect_product"]
+
+
+def test_save_meal_idea_feedback_allows_multiple_rows_for_the_same_request(db_path):
+    """More than one idea from the same request can each get their own feedback --
+    request_id alone is not a unique key."""
+    for title in ("Chicken and Rice", "Pork and Rice"):
+        save_meal_idea_feedback(
+            db_path,
+            request_id="abc123",
+            recommendation_type="cart",
+            idea_title=title,
+            helpful=True,
+            reasons=[],
+            selected_items_used=[],
+            missing_required_ingredients=[],
+            source_type="retrieved",
+            submitted_at="2026-07-17T12:00:00+00:00",
+        )
+
+    rows = _read_feedback_rows(db_path)
+    assert len(rows) == 2
