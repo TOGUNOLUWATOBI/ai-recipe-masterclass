@@ -30,7 +30,7 @@ describe("HomeScreen", () => {
   it("shows the app name and motto", async () => {
     await renderWithProviders(<HomeScreen />);
 
-    expect(screen.getByText("AI Recipe Masterclass")).toBeTruthy();
+    expect(screen.getByText("Kokkelere")).toBeTruthy();
     expect(screen.getByText("Welcome to a cheaper everyday")).toBeTruthy();
   });
 

@@ -19,9 +19,7 @@ export const translations = {
     tabMealIdeas: "Meal Ideas",
     dealDetailTitle: "Recipe",
 
-    // TODO: "AI Recipe Masterclass" is this repo's own working title, not a confirmed
-    // consumer-facing brand name -- swap for the real app name once decided.
-    appName: "AI Recipe Masterclass",
+    appName: "Kokkelere",
     appMotto: "Welcome to a cheaper everyday",
     homeDagensDealsButton: "Today's Deals",
     homeNavHeading: "Get started",
@@ -149,7 +147,7 @@ export const translations = {
     tabMealIdeas: "Middagsidéer",
     dealDetailTitle: "Oppskrift",
 
-    appName: "AI Recipe Masterclass",
+    appName: "Kokkelere",
     appMotto: "Velkommen til en billigere hverdag",
     homeDagensDealsButton: "Dagens Deals",
     homeNavHeading: "Kom i gang",
