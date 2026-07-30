@@ -12,11 +12,47 @@ import type { Language } from "./language";
 
 export const translations = {
   en: {
+    tabHome: "Home",
     tabDeals: "Deals",
     tabCart: "Cart",
     tabAsk: "Ask",
     tabMealIdeas: "Meal Ideas",
     dealDetailTitle: "Recipe",
+
+    // TODO: "AI Recipe Masterclass" is this repo's own working title, not a confirmed
+    // consumer-facing brand name -- swap for the real app name once decided.
+    appName: "AI Recipe Masterclass",
+    appMotto: "Welcome to a cheaper everyday",
+    homeDagensDealsButton: "Today's Deals",
+    homeNavHeading: "Get started",
+    homeAccountHeading: "Account",
+    homeLoggedInAs: (phone: string) => `Logged in as ${phone}`,
+    homeLoginButton: "Log in with phone",
+    homeLogoutButton: "Log out",
+    homeDeleteMyDataButton: "Delete my data",
+
+    countryCodeSelectorLabel: "Choose",
+    authLoginHeading: "Log in",
+    authPhoneLabel: "Phone number",
+    authPhonePlaceholder: "Your number",
+    authConsentPrefix: "I agree to the",
+    authPrivacyPolicyLinkText: "Privacy Policy",
+    authSendCodeButton: "Send code",
+    authErrorMustAgreeToPrivacyPolicy: "Please agree to the Privacy Policy to continue.",
+    authErrorInvalidPhone: "Enter a valid phone number.",
+    authVerifyHeading: "Enter the code",
+    authVerifySubtitle: (phone: string) => `We sent a 6-digit code to ${phone}`,
+    authOtpLabel: "Verification code",
+    authOtpPlaceholder: "6-digit code",
+    authVerifyButton: "Verify",
+    authResendCodeButton: "Resend code",
+    authErrorInvalidCode: "Enter the 6-digit code.",
+
+    privacyPolicyTitle: "Privacy Policy",
+    deleteMyDataConfirmTitle: "Delete my data?",
+    deleteMyDataConfirmMessage:
+      "This logs you out and clears your cart and order history stored on this device. This cannot be undone.",
+    delete: "Delete",
 
     addToCart: "Add to cart",
     cartEmpty: "Your cart is empty. Add items from Deals to get started.",
@@ -106,11 +142,45 @@ export const translations = {
     validationIngredientTooLong: (item: string, max: number) => `"${item}" is too long (max ${max} characters).`,
   },
   no: {
+    tabHome: "Hjem",
     tabDeals: "Tilbud",
     tabCart: "Handlekurv",
     tabAsk: "Spør",
     tabMealIdeas: "Middagsidéer",
     dealDetailTitle: "Oppskrift",
+
+    appName: "AI Recipe Masterclass",
+    appMotto: "Velkommen til en billigere hverdag",
+    homeDagensDealsButton: "Dagens Deals",
+    homeNavHeading: "Kom i gang",
+    homeAccountHeading: "Konto",
+    homeLoggedInAs: (phone: string) => `Logget inn som ${phone}`,
+    homeLoginButton: "Logg inn med telefon",
+    homeLogoutButton: "Logg ut",
+    homeDeleteMyDataButton: "Slett mine data",
+
+    countryCodeSelectorLabel: "Velg",
+    authLoginHeading: "Logg inn",
+    authPhoneLabel: "Telefonnummer",
+    authPhonePlaceholder: "Ditt nummer",
+    authConsentPrefix: "Jeg godtar",
+    authPrivacyPolicyLinkText: "personvernerklæringen",
+    authSendCodeButton: "Send kode",
+    authErrorMustAgreeToPrivacyPolicy: "Du må godta personvernerklæringen for å fortsette.",
+    authErrorInvalidPhone: "Skriv inn et gyldig telefonnummer.",
+    authVerifyHeading: "Skriv inn koden",
+    authVerifySubtitle: (phone: string) => `Vi sendte en 6-sifret kode til ${phone}`,
+    authOtpLabel: "Bekreftelseskode",
+    authOtpPlaceholder: "6-sifret kode",
+    authVerifyButton: "Bekreft",
+    authResendCodeButton: "Send kode på nytt",
+    authErrorInvalidCode: "Skriv inn den 6-sifrede koden.",
+
+    privacyPolicyTitle: "Personvernerklæring",
+    deleteMyDataConfirmTitle: "Slette mine data?",
+    deleteMyDataConfirmMessage:
+      "Dette logger deg ut og fjerner handlekurven og bestillingshistorikken lagret på denne enheten. Dette kan ikke reverseres.",
+    delete: "Slett",
 
     addToCart: "Legg i handlekurv",
     cartEmpty: "Handlekurven din er tom. Legg til varer fra Tilbud for å komme i gang.",

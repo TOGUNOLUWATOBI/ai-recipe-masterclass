@@ -14,3 +14,12 @@ export const API_BASE_URL = "https://recipe.bebs.dev";
 // was still working and had already succeeded by the time it got re-queried.
 export const DEFAULT_TIMEOUT_MS = 150_000; // /query, /recipes/from-ingredients
 export const DISCOUNTED_TIMEOUT_MS = 180_000; // /recipes/discounted scans ~33 ingredients sequentially
+
+// Phone-number login (Supabase Auth, phone OTP) -- placeholders until a real Supabase
+// project exists. Replace both once you've created one: Project Settings -> API ->
+// Project URL / anon public key. The anon key is safe to ship in client code by
+// design (Supabase's Row Level Security policies are what actually gate access, not
+// keeping this key secret) -- same "no secrets in this file" posture as
+// API_BASE_URL above, no .env needed.
+export const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co"; // TODO: replace once the Supabase project exists
+export const SUPABASE_ANON_KEY = "YOUR-ANON-KEY"; // TODO: replace once the Supabase project exists

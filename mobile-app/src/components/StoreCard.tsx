@@ -1,6 +1,8 @@
 import React from "react";
-import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Image, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Text } from "./AppText";
 import { useLanguage } from "../i18n/LanguageContext";
+import { FONT_BOLD } from "../theme/typography";
 
 interface StoreCardProps {
   storeName: string;
@@ -55,7 +57,7 @@ const styles = StyleSheet.create({
   logoPlaceholder: { alignItems: "center", justifyContent: "center" },
   logoPlaceholderText: { fontSize: 20 },
   info: { flex: 1 },
-  storeName: { fontSize: 16, fontWeight: "700", color: "#1a1a1a" },
+  storeName: { fontSize: 16, fontWeight: "700", fontFamily: FONT_BOLD, color: "#1a1a1a" },
   itemCount: { fontSize: 13, color: "#888", marginTop: 2 },
   chevron: { fontSize: 22, color: "#ccc", marginLeft: 8 },
 });

@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { StyleSheet, TouchableOpacity, View } from "react-native";
+import { Text } from "./AppText";
 import { useCart } from "../cart/CartContext";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { DiscountedProduct } from "../types/api";

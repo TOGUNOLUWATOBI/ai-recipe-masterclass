@@ -1,11 +1,13 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getDiscountedRecipes } from "../api/client";
 import { userMessageForError } from "../api/errors";
+import { Text } from "../components/AppText";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { FONT_BOLD } from "../theme/typography";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { StoreCard } from "../components/StoreCard";
 import { useLanguage } from "../i18n/LanguageContext";
@@ -156,7 +158,7 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#f5f5f5" },
   headerRow: { paddingHorizontal: 16, paddingBottom: 8 },
   headerTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  heading: { fontSize: 26, fontWeight: "800", color: "#1a1a1a" },
+  heading: { fontSize: 26, fontWeight: "800", fontFamily: FONT_BOLD, color: "#1a1a1a" },
   updatedAt: { fontSize: 12, color: "#888", marginTop: 2 },
   tabRow: {
     flexDirection: "row",

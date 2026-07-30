@@ -4,14 +4,17 @@ import { NavigationContainer } from "@react-navigation/native";
 import React from "react";
 import { useCart } from "../cart/CartContext";
 import { useLanguage } from "../i18n/LanguageContext";
+import type { RootTabParamList } from "./types";
 import { AskScreen } from "../screens/AskScreen";
 import { CartScreen } from "../screens/CartScreen";
+import { HomeStackNavigator } from "./HomeStackNavigator";
 import { MealIdeasStackNavigator } from "./MealIdeasStackNavigator";
 import { TilbudStackNavigator } from "./TilbudStackNavigator";
 
-const Tab = createBottomTabNavigator();
+const Tab = createBottomTabNavigator<RootTabParamList>();
 
 const TAB_ICONS: Record<string, { filled: keyof typeof Ionicons.glyphMap; outline: keyof typeof Ionicons.glyphMap }> = {
+  Home: { filled: "home", outline: "home-outline" },
   Tilbud: { filled: "pricetags", outline: "pricetags-outline" },
   Cart: { filled: "cart", outline: "cart-outline" },
   Ask: { filled: "chatbubble-ellipses", outline: "chatbubble-ellipses-outline" },
@@ -36,6 +39,7 @@ export function AppNavigator() {
           ),
         })}
       >
+        <Tab.Screen name="Home" component={HomeStackNavigator} options={{ title: t.tabHome }} />
         <Tab.Screen name="Tilbud" component={TilbudStackNavigator} options={{ title: t.tabDeals }} />
         <Tab.Screen
           name="Cart"

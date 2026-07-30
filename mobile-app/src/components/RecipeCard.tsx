@@ -1,5 +1,6 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Text } from "./AppText";
 import { useLanguage } from "../i18n/LanguageContext";
 import { parseRecipeText } from "../utils/parseRecipeText";
 

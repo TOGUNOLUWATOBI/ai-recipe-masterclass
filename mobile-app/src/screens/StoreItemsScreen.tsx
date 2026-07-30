@@ -2,10 +2,12 @@ import type { RouteProp } from "@react-navigation/native";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import React from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { Text } from "../components/AppText";
 import { DealCard } from "../components/DealCard";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { TilbudStackParamList } from "../navigation/types";
+import { FONT_BOLD } from "../theme/typography";
 import type { DiscountedProduct } from "../types/api";
 
 export function StoreItemsScreen() {
@@ -53,7 +55,7 @@ export function StoreItemsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f5f5f5" },
   scrollContent: { padding: 12, paddingBottom: 24 },
-  sectionHeader: { fontSize: 18, fontWeight: "700", color: "#1a1a1a", marginTop: 12, marginBottom: 8 },
+  sectionHeader: { fontSize: 18, fontWeight: "700", fontFamily: FONT_BOLD, color: "#1a1a1a", marginTop: 12, marginBottom: 8 },
   grid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   cell: { width: "48%", marginBottom: 12 },
 });

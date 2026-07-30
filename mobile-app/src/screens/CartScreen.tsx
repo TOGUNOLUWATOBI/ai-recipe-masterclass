@@ -1,11 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import React, { useCallback, useState } from "react";
-import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Image, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getDiscountedRecipes } from "../api/client";
 import { useCart } from "../cart/CartContext";
+import { Text } from "../components/AppText";
 import { useLanguage } from "../i18n/LanguageContext";
+import { FONT_BOLD } from "../theme/typography";
 import { cartItemIdFor, type CartItem } from "../types/cart";
 
 function formatNok(value: number): string {
@@ -197,11 +199,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 8,
   },
-  heading: { fontSize: 26, fontWeight: "800", color: "#1a1a1a" },
+  heading: { fontSize: 26, fontWeight: "800", fontFamily: FONT_BOLD, color: "#1a1a1a" },
   clearCartText: { color: "#e63946", fontWeight: "600", fontSize: 13 },
   selectionSummary: { fontSize: 13, color: "#666", paddingHorizontal: 16, marginBottom: 8 },
   scrollContent: { padding: 12, paddingBottom: 24 },
-  sectionHeader: { fontSize: 18, fontWeight: "700", color: "#1a1a1a", marginTop: 12, marginBottom: 8, marginHorizontal: 4 },
+  sectionHeader: { fontSize: 18, fontWeight: "700", fontFamily: FONT_BOLD, color: "#1a1a1a", marginTop: 12, marginBottom: 8, marginHorizontal: 4 },
   row: {
     flexDirection: "row",
     backgroundColor: "#fff",
@@ -215,7 +217,7 @@ const styles = StyleSheet.create({
   rowImagePlaceholder: { alignItems: "center", justifyContent: "center" },
   rowImagePlaceholderText: { fontSize: 22 },
   rowDetails: { flex: 1, gap: 3 },
-  rowName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
+  rowName: { fontSize: 14, fontWeight: "600", fontFamily: FONT_BOLD, color: "#1a1a1a", textTransform: "uppercase" },
   rowStore: { fontSize: 11, color: "#888" },
   rowPriceRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
   rowPrice: { fontSize: 14, fontWeight: "700", color: "#e63946" },

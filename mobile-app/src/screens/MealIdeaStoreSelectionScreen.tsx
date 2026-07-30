@@ -1,9 +1,10 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { getDiscountedRecipes } from "../api/client";
 import { userMessageForError } from "../api/errors";
+import { Text } from "../components/AppText";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { MealIdeasStackParamList } from "../navigation/types";
