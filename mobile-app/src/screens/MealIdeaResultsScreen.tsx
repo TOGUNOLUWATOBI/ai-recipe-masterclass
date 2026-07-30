@@ -1,10 +1,11 @@
 import type { RouteProp } from "@react-navigation/native";
 import { useRoute } from "@react-navigation/native";
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { getIngredientOffers, getMealIdeasFromCart, getMealIdeasFromStore, submitMealIdeaFeedback } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { useCart } from "../cart/CartContext";
+import { Text } from "../components/AppText";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useLanguage } from "../i18n/LanguageContext";
 import { translations } from "../i18n/translations";
@@ -58,7 +59,7 @@ function OfferRow({ offer }: { offer: IngredientOffer }) {
   return (
     <View style={styles.offerRow} testID="ingredient-offer-row">
       <Text style={styles.offerText} numberOfLines={1}>
-        {offer.original_product_name}
+        <Text style={styles.offerProductName}>{offer.original_product_name}</Text>
         {offer.store_name ? ` · ${offer.store_name}` : ""}
         {offer.match_confidence === "fuzzy" ? ` (${t.mealIdeasPossibleMatchLabel})` : ""}
       </Text>
@@ -477,6 +478,7 @@ const styles = StyleSheet.create({
   noOfferText: { fontSize: 12, color: "#999", fontStyle: "italic" },
   offerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
   offerText: { fontSize: 13, color: "#333", flex: 1 },
+  offerProductName: { textTransform: "uppercase" },
   offerPriceRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   offerPrice: { fontSize: 13, fontWeight: "700", color: "#e63946" },
   offerReferencePrice: { fontSize: 11, color: "#999", textDecorationLine: "line-through" },

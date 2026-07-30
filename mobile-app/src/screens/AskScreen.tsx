@@ -5,18 +5,19 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { askQuestion } from "../api/client";
 import { userMessageForError } from "../api/errors";
+import { Text } from "../components/AppText";
+import { TextInput } from "../components/AppTextInput";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { RecipeCard } from "../components/RecipeCard";
 import { useLanguage } from "../i18n/LanguageContext";
+import { FONT_BOLD } from "../theme/typography";
 import type { QueryResponse } from "../types/api";
 import { MAX_QUESTION_LENGTH } from "../api/validation";
 
@@ -105,7 +106,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { padding: 16, backgroundColor: "#f5f5f5", flexGrow: 1 },
   headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
-  heading: { fontSize: 22, fontWeight: "700" },
+  heading: { fontSize: 22, fontWeight: "700", fontFamily: FONT_BOLD },
   input: {
     backgroundColor: "#fff",
     borderRadius: 8,

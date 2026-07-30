@@ -2,12 +2,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import React from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { StyleSheet, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useCart } from "../cart/CartContext";
+import { Text } from "../components/AppText";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { MealIdeasStackParamList } from "../navigation/types";
+import { FONT_BOLD } from "../theme/typography";
 
 // Epic E1: two clear starting points -- "From my cart" (Epic C's existing selection,
 // see CartContext's selected_for_meal_ideas) or "From a store's offers" (Epic E2) --
@@ -58,7 +60,7 @@ export function MealIdeasScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f5f5f5", paddingHorizontal: 16 },
   headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 20 },
-  heading: { fontSize: 26, fontWeight: "800", color: "#1a1a1a" },
+  heading: { fontSize: 26, fontWeight: "800", fontFamily: FONT_BOLD, color: "#1a1a1a" },
   card: {
     flexDirection: "row",
     alignItems: "center",

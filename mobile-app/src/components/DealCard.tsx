@@ -1,6 +1,8 @@
 import React from "react";
-import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Image, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Text } from "./AppText";
 import type { DiscountedProduct } from "../types/api";
+import { FONT_BOLD } from "../theme/typography";
 import { AddToCartButton } from "./AddToCartButton";
 
 function formatNok(value: number): string {
@@ -84,10 +86,22 @@ const styles = StyleSheet.create({
   image: { width: "100%", height: 90, borderRadius: 8, marginBottom: 8, backgroundColor: "#f5f5f5" },
   imagePlaceholder: { alignItems: "center", justifyContent: "center" },
   imagePlaceholderText: { fontSize: 28 },
-  name: { fontSize: 13, fontWeight: "600", color: "#1a1a1a", minHeight: 34, overflow: "hidden" },
+  // Tjek headings arrive in whatever case each merchant happened to submit (some
+  // ALL CAPS, some Title Case, some sentence case) -- textTransform normalizes the
+  // *display* only, never the underlying string, so screen readers/search/cart
+  // matching still see the real product_name untouched.
+  name: {
+    fontSize: 13,
+    fontWeight: "600",
+    fontFamily: FONT_BOLD,
+    color: "#1a1a1a",
+    minHeight: 34,
+    overflow: "hidden",
+    textTransform: "uppercase",
+  },
   unitPrice: { fontSize: 11, color: "#888", marginTop: 2 },
   priceColumn: { marginTop: 6 },
-  price: { fontSize: 17, fontWeight: "800", color: "#e63946" },
+  price: { fontSize: 17, fontWeight: "800", fontFamily: FONT_BOLD, color: "#e63946" },
   priceNoDiscount: { color: "#1a1a1a" },
   referencePrice: { fontSize: 12, color: "#999", textDecorationLine: "line-through", marginTop: 2 },
 });

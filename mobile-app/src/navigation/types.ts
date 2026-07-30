@@ -1,5 +1,23 @@
 import type { DiscountedProduct } from "../types/api";
 
+// The bottom tab navigator's own route names -- used by HomeScreen to jump straight to
+// another tab (e.g. the Dagens Deals shortcut) rather than nesting through that tab's
+// own internal stack params, which HomeScreen has no reason to know about.
+export type RootTabParamList = {
+  Home: undefined;
+  Tilbud: undefined;
+  Cart: undefined;
+  Ask: undefined;
+  MealIdeas: undefined;
+};
+
+export type HomeStackParamList = {
+  HomeMain: undefined;
+  Login: undefined;
+  VerifyOtp: { phone: string };
+  PrivacyPolicy: undefined;
+};
+
 export interface StoreGroup {
   storeName: string;
   storeLogoUrl: string | null;

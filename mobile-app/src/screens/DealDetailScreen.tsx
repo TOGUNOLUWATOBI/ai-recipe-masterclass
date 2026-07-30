@@ -1,15 +1,17 @@
 import type { RouteProp } from "@react-navigation/native";
 import { useRoute } from "@react-navigation/native";
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Image, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { getRecipesFromIngredients } from "../api/client";
 import { userMessageForError } from "../api/errors";
 import { MAX_INGREDIENT_COUNT } from "../api/validation";
 import { AddToCartButton } from "../components/AddToCartButton";
+import { Text } from "../components/AppText";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { RecipeCard } from "../components/RecipeCard";
 import { useLanguage } from "../i18n/LanguageContext";
 import type { TilbudStackParamList } from "../navigation/types";
+import { FONT_BOLD } from "../theme/typography";
 import type { IngredientsResponse } from "../types/api";
 
 function formatNok(value: number): string {
@@ -164,7 +166,7 @@ const styles = StyleSheet.create({
   container: { padding: 16, backgroundColor: "#f5f5f5", flexGrow: 1 },
   hero: { backgroundColor: "#fff", borderRadius: 12, padding: 16, alignItems: "center", marginBottom: 20 },
   heroImage: { width: 140, height: 140, marginBottom: 12 },
-  productName: { fontSize: 18, fontWeight: "700", textAlign: "center", color: "#1a1a1a" },
+  productName: { fontSize: 18, fontWeight: "700", fontFamily: FONT_BOLD, textAlign: "center", color: "#1a1a1a", textTransform: "uppercase" },
   storeName: { fontSize: 13, color: "#888", marginTop: 2 },
   priceRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
   price: { fontSize: 22, fontWeight: "800", color: "#e63946" },
