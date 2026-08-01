@@ -1,70 +1,60 @@
 import React from "react";
-import { ScrollView, StyleSheet } from "react-native";
-import { Text } from "../components/AppText";
+import { LegalDocumentLayout } from "../components/LegalDocumentLayout";
 import { useLanguage } from "../i18n/LanguageContext";
-import { FONT_BOLD } from "../theme/typography";
 
-// A placeholder policy covering exactly what this app actually does today (phone-
-// number login, a local cart, no ad tracking) -- written to be accurate to the real
-// data flows in this codebase rather than generic boilerplate copied from elsewhere.
-// Replace with real legal copy before shipping to real users; this exists so the
-// consent checkbox on the login screen has something genuine to link to.
+// Accurate to what this app actually does: no account, no login, no phone number --
+// just a cart stored locally on the device, and the product names in it sent to the
+// recipe backend only to generate meal ideas. Written to reflect the real data flows
+// in this codebase rather than generic boilerplate; replace with real legal copy
+// before shipping to real users.
 export function PrivacyPolicyScreen() {
-  const { language } = useLanguage();
+  const { t, language } = useLanguage();
 
   const sections =
     language === "no"
       ? [
           {
             heading: "Hvilke data samler vi inn?",
-            body: "Telefonnummeret du logger inn med, og produktene du legger i handlekurven. Handlekurven lagres kun lokalt på enheten din.",
+            body: "Ingen kontoinformasjon i det hele tatt -- appen krever ikke pålogging. Det eneste som lagres er handlekurven din (varene du har lagt til), og den lagres kun lokalt på din egen enhet.",
           },
           {
             heading: "Hva bruker vi dataene til?",
-            body: "Telefonnummeret brukes bare til å logge deg inn (via engangskode på SMS). Vi bruker det ikke til markedsføring eller deler det med tredjeparter.",
+            body: "Når du ber om middagsidéer, sender appen navnene på varene du har valgt til vår oppskrifts-tjeneste for å generere forslag. Ingenting knyttes til deg personlig -- det finnes ingen brukerkonto å knytte det til.",
           },
           {
             heading: "Hvor lenge lagrer vi dataene?",
-            body: "Så lenge du er logget inn på denne enheten. Du kan slette all lagret data når du vil, se \"Slett mine data\" i appen.",
+            body: "Handlekurven blir liggende på enheten din til du selv tømmer den, sletter appen, eller trykker \"Slett mine data\" i appen.",
           },
           {
             heading: "Dine rettigheter",
-            body: "Du kan når som helst be om å få dataene dine slettet via \"Slett mine data\", eller kontakte oss direkte.",
+            body: "Siden ingenting lagres på våre servere, har du full kontroll lokalt: \"Slett mine data\" i appen fjerner alt umiddelbart. Spørsmål kan rettes direkte til oss.",
           },
         ]
       : [
           {
             heading: "What data do we collect?",
-            body: "The phone number you log in with, and the products you add to your cart. Your cart is stored only locally on your device.",
+            body: "No account information at all -- the app doesn't require logging in. The only thing stored is your cart (the products you've added), and it lives only locally on your own device.",
           },
           {
             heading: "What do we use it for?",
-            body: "Your phone number is only used to log you in (via a one-time SMS code). We don't use it for marketing or share it with third parties.",
+            body: "When you ask for meal ideas, the app sends the names of your selected products to our recipe service to generate suggestions. Nothing is tied to you personally -- there's no user account for it to be tied to.",
           },
           {
             heading: "How long do we keep it?",
-            body: 'For as long as you stay logged in on this device. You can delete all stored data at any time via "Delete my data" in the app.',
+            body: 'Your cart stays on your device until you clear it yourself, delete the app, or tap "Delete my data" in the app.',
           },
           {
             heading: "Your rights",
-            body: 'You can request deletion of your data at any time via "Delete my data", or by contacting us directly.',
+            body: 'Since nothing is stored on our servers, you have full control locally: "Delete my data" in the app removes everything immediately. Questions can be sent directly to us.',
           },
         ];
 
   return (
-    <ScrollView contentContainerStyle={styles.container} testID="privacy-policy-screen">
-      {sections.map((section) => (
-        <React.Fragment key={section.heading}>
-          <Text style={styles.heading}>{section.heading}</Text>
-          <Text style={styles.body}>{section.body}</Text>
-        </React.Fragment>
-      ))}
-    </ScrollView>
+    <LegalDocumentLayout
+      title={t.privacyPolicyTitle}
+      lastUpdated={t.legalLastUpdated}
+      sections={sections}
+      testID="privacy-policy-screen"
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  container: { padding: 16, backgroundColor: "#f5f5f5" },
-  heading: { fontSize: 16, fontWeight: "700", fontFamily: FONT_BOLD, color: "#1a1a1a", marginTop: 16, marginBottom: 6 },
-  body: { fontSize: 14, color: "#333", lineHeight: 20 },
-});

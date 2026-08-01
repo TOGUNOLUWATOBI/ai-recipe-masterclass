@@ -1,21 +1,24 @@
 import type { DiscountedProduct } from "../types/api";
 
-// The bottom tab navigator's own route names -- used by HomeScreen to jump straight to
-// another tab (e.g. the Dagens Deals shortcut) rather than nesting through that tab's
-// own internal stack params, which HomeScreen has no reason to know about.
+// The root-level stack: either the pre-consent Terms gate or the main tab experience is
+// mounted as "the" screen here (see AppNavigator.tsx's hasAcceptedTerms conditional) --
+// TermsAndConditions/PrivacyPolicy stay in this same stack regardless of which one is
+// active, so both the gate and the Settings tab (nested inside MainTabs) can reach them
+// via a plain navigate() call that bubbles up to this root.
+export type RootStackParamList = {
+  TermsGate: undefined;
+  MainTabs: undefined;
+  TermsAndConditions: undefined;
+  PrivacyPolicy: undefined;
+};
+
+// The bottom tab navigator's own route names.
 export type RootTabParamList = {
-  Home: undefined;
   Tilbud: undefined;
   Cart: undefined;
   Ask: undefined;
   MealIdeas: undefined;
-};
-
-export type HomeStackParamList = {
-  HomeMain: undefined;
-  Login: undefined;
-  VerifyOtp: { phone: string };
-  PrivacyPolicy: undefined;
+  Settings: undefined;
 };
 
 export interface StoreGroup {

@@ -3,8 +3,8 @@ import { StatusBar } from "expo-status-bar";
 import React from "react";
 import { ActivityIndicator, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { AuthProvider } from "./src/auth/AuthContext";
 import { CartProvider } from "./src/cart/CartContext";
+import { ConsentProvider } from "./src/consent/ConsentContext";
 import { LanguageProvider } from "./src/i18n/LanguageContext";
 import { AppNavigator } from "./src/navigation/AppNavigator";
 import { FONT_ASSETS } from "./src/theme/typography";
@@ -27,11 +27,11 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <LanguageProvider>
-        <AuthProvider>
+        <ConsentProvider>
           <CartProvider>
             <AppNavigator />
           </CartProvider>
-        </AuthProvider>
+        </ConsentProvider>
       </LanguageProvider>
       <StatusBar style="auto" />
     </SafeAreaProvider>
